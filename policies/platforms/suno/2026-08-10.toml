@@ -1,0 +1,12 @@
+snapshot_id = "suno-2026-08-10"
+provider = "suno"
+retrieved_at = "2026-08-10"
+snapshot_kind = "source-reference"
+human_review_required = true
+
+official_sources = [
+  "https://suno.com/terms",
+  "https://help.suno.com/en/categories/550145",
+]
+
+note = "Record the plan and applicable terms at each operation. This reference is evidence context, not a legal conclusion. Preserve private receipts or screenshots outside the public repository and record only an opaque locator plus SHA-256."
