@@ -14,6 +14,9 @@ fields = ["occurred_at", "model", "provider_object_id", "prompt_ref"]
 [required.edit]
 fields = ["occurred_at", "provider_operation", "parent_refs"]
 
+[required.export]
+fields = ["occurred_at", "provider_operation", "parent_refs", "output_refs"]
+
 [rights]
 voice_requires_evidence = false
 uploaded_audio_requires_evidence = true

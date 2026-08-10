@@ -16,6 +16,7 @@ from .io import (
     atomic_write_json,
     atomic_write_toml,
     find_root,
+    load_config,
     load_toml,
     now_iso,
     resolve_inside,
@@ -27,6 +28,7 @@ from .records import (
     record_review,
     record_rights,
     register_edit,
+    register_export,
     register_generation,
     register_render,
     seal_record,
@@ -51,6 +53,22 @@ def _actor(value: str) -> str:
 
 def _source_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _effective_provider(root: Path, track_id: str, explicit: str) -> str:
+    if explicit:
+        return explicit
+    track = load_toml(root / "tracks" / track_id / "track.toml")
+    track_provider = track.get("default_provider")
+    if isinstance(track_provider, str) and track_provider:
+        return track_provider
+    project = load_config(root).get("project")
+    if not isinstance(project, dict) or not isinstance(project.get("default_provider"), str):
+        raise ValueError("project.default_provider must be configured")
+    provider = str(project["default_provider"])
+    if not provider:
+        raise ValueError("project.default_provider must be configured")
+    return provider
 
 
 def _ignored_copy_path(relative: Path) -> bool:
@@ -201,7 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     generation = subparsers.add_parser("register-generation")
     generation.add_argument("--track-id", required=True)
     generation.add_argument("--actor", default="")
-    generation.add_argument("--provider", default="suno")
+    generation.add_argument("--provider", default="", help="explicit provider override")
     generation.add_argument("--operation", default="create")
     generation.add_argument("--occurred-at", default="")
     generation.add_argument("--model", required=True)
@@ -218,13 +236,24 @@ def build_parser() -> argparse.ArgumentParser:
     edit = subparsers.add_parser("register-edit")
     edit.add_argument("--track-id", required=True)
     edit.add_argument("--actor", default="")
-    edit.add_argument("--provider", default="suno")
+    edit.add_argument("--provider", default="", help="explicit provider override")
     edit.add_argument("--operation", required=True)
     edit.add_argument("--occurred-at", default="")
     edit.add_argument("--parent-ref", action="append", required=True)
     edit.add_argument("--input-ref", action="append", default=[])
     edit.add_argument("--output-ref", action="append", default=[])
     edit.add_argument("--provider-data", action="append", default=[])
+
+    export = subparsers.add_parser("register-export")
+    export.add_argument("--track-id", required=True)
+    export.add_argument("--actor", default="")
+    export.add_argument("--provider", default="", help="explicit provider override")
+    export.add_argument("--operation", required=True)
+    export.add_argument("--occurred-at", default="")
+    export.add_argument("--parent-ref", action="append", required=True)
+    export.add_argument("--input-ref", action="append", default=[])
+    export.add_argument("--output-ref", action="append", required=True)
+    export.add_argument("--provider-data", action="append", default=[])
 
     render = subparsers.add_parser("register-render")
     render.add_argument("--track-id", required=True)
@@ -239,6 +268,11 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--track-id", required=True)
     review.add_argument("--actor", default="")
     review.add_argument("--subject-ref", required=True)
+    review.add_argument(
+        "--subject-sha256",
+        default="",
+        help="SHA-256 of the exact reviewed media; required for a release listening gate",
+    )
     review.add_argument("--decision", required=True)
     review.add_argument("--blind-label", default="")
     review.add_argument("--timestamp-notes", default="")
@@ -333,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
                     root,
                     track_id=args.track_id,
                     actor=_actor(args.actor),
-                    provider=args.provider,
+                    provider=_effective_provider(root, args.track_id, args.provider),
                     operation=args.operation,
                     occurred_at=args.occurred_at,
                     model=args.model,
@@ -354,7 +388,22 @@ def main(argv: list[str] | None = None) -> int:
                     root,
                     track_id=args.track_id,
                     actor=_actor(args.actor),
-                    provider=args.provider,
+                    provider=_effective_provider(root, args.track_id, args.provider),
+                    operation=args.operation,
+                    occurred_at=args.occurred_at,
+                    parent_refs=args.parent_ref,
+                    input_refs=args.input_ref,
+                    output_refs=args.output_ref,
+                    provider_data=args.provider_data,
+                )
+            )
+        elif args.command == "register-export":
+            print(
+                register_export(
+                    root,
+                    track_id=args.track_id,
+                    actor=_actor(args.actor),
+                    provider=_effective_provider(root, args.track_id, args.provider),
                     operation=args.operation,
                     occurred_at=args.occurred_at,
                     parent_refs=args.parent_ref,
@@ -383,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
                     track_id=args.track_id,
                     actor=_actor(args.actor),
                     subject_ref=args.subject_ref,
+                    subject_sha256=args.subject_sha256,
                     decision=args.decision,
                     blind_label=args.blind_label,
                     timestamp_notes=args.timestamp_notes,

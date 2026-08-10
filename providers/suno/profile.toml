@@ -9,10 +9,13 @@ edit_operations = ["replace_section", "edit_lyrics", "extend", "remaster", "pers
 export_operations = ["download", "stem_export", "studio_export"]
 
 [required.generation]
-fields = ["occurred_at", "model", "plan_at_operation", "provider_object_id", "prompt_ref", "terms_snapshot_ref"]
+fields = ["occurred_at", "model", "plan_at_operation", "provider_object_id", "prompt_ref", "terms_snapshot_ref", "terms_snapshot_sha256"]
 
 [required.edit]
 fields = ["occurred_at", "provider_operation", "parent_refs"]
+
+[required.export]
+fields = ["occurred_at", "provider_operation", "parent_refs", "output_refs"]
 
 [rights]
 voice_requires_evidence = true

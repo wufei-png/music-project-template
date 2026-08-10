@@ -1,12 +1,6 @@
-*.wav  filter=lfs diff=lfs merge=lfs -text
-*.aif  filter=lfs diff=lfs merge=lfs -text
-*.aiff filter=lfs diff=lfs merge=lfs -text
-*.flac filter=lfs diff=lfs merge=lfs -text
-*.mp3  filter=lfs diff=lfs merge=lfs -text
-*.m4a  filter=lfs diff=lfs merge=lfs -text
-*.mid  filter=lfs diff=lfs merge=lfs -text
-*.midi filter=lfs diff=lfs merge=lfs -text
-*.zip  filter=lfs diff=lfs merge=lfs -text
-*.psd  filter=lfs diff=lfs merge=lfs -text
-*.tif  filter=lfs diff=lfs merge=lfs -text
-*.tiff filter=lfs diff=lfs merge=lfs -text
+# Only approved long-lived asset areas use LFS. Final public masters remain
+# authoritative GitHub Release assets; local candidates and temporary renders do not.
+assets/inputs/**     filter=lfs diff=lfs merge=lfs -text
+assets/selected/**   filter=lfs diff=lfs merge=lfs -text
+assets/stems/**      filter=lfs diff=lfs merge=lfs -text
+assets/milestones/** filter=lfs diff=lfs merge=lfs -text

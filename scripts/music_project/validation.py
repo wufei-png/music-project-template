@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import tomllib
@@ -7,7 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import SCHEMA_VERSION
+from . import SCHEMA_VERSION, TEMPLATE_VERSION, TOOL_VERSION
 from .io import canonical_hash, load_toml, resolve_inside, sha256_file
 
 
@@ -43,6 +44,7 @@ WORKFLOW_STATES = {
 LEVELS = {"minimal": 0, "post": 1, "release": 2}
 REFERENCE_FIELD_TYPES = {
     "asset_ref": {"asset"},
+    "canonical_location_ref": {"asset_location"},
     "input_refs": {"asset"},
     "listening_gate_refs": {"review"},
     "lyrics_ref": {"lyrics"},
@@ -68,6 +70,19 @@ FORBIDDEN_CREDENTIAL_KEYS = {
     "secret",
     "session_token",
 }
+IMMUTABLE_RECORD_TYPES = {
+    "generation",
+    "edit",
+    "export",
+    "render",
+    "asset",
+    "asset_location",
+    "review",
+    "rights_evidence",
+    "release_candidate",
+    "publication",
+}
+RETENTION_MODES = {"metadata_only", "timed_local", "external_archive"}
 
 
 @dataclass(frozen=True)
@@ -76,6 +91,10 @@ class Issue:
     code: str
     path: str
     message: str
+
+
+def _table(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def record_paths(root: Path) -> list[Path]:
@@ -108,7 +127,7 @@ def load_records(root: Path) -> tuple[list[tuple[Path, dict[str, Any]]], list[Is
 
 
 def _scope(record: dict[str, Any]) -> str:
-    if record.get("record_type") in {"portfolio", "asset", "asset_location", "publication"}:
+    if record.get("record_type") in {"portfolio", "asset", "asset_location"}:
         return "global"
     return str(record.get("track_ref") or record.get("record_id") or "global")
 
@@ -175,12 +194,102 @@ def _forbidden_keys(value: Any, prefix: str = "") -> Iterable[str]:
             yield from _forbidden_keys(item, f"{prefix}[{index}]")
 
 
-def _provider_profiles(root: Path) -> dict[str, dict[str, Any]]:
+def _provider_profiles(root: Path) -> tuple[dict[str, dict[str, Any]], list[Issue]]:
     profiles: dict[str, dict[str, Any]] = {}
+    issues: list[Issue] = []
     for path in (root / "providers").glob("*/profile.toml"):
-        profile = load_toml(path)
+        relative = path.relative_to(root).as_posix()
+        try:
+            profile = load_toml(path)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            issues.append(Issue("error", "provider_profile", relative, str(exc)))
+            continue
+        required = ("profile_version", "provider", "mode", "generation_operations")
+        missing = [field for field in required if profile.get(field) in (None, "", [])]
+        if missing:
+            issues.append(
+                Issue(
+                    "error",
+                    "provider_profile",
+                    relative,
+                    f"missing provider profile fields: {', '.join(missing)}",
+                )
+            )
+            continue
+        if profile.get("unofficial_automation_allowed") is not False:
+            issues.append(
+                Issue(
+                    "error",
+                    "provider_profile",
+                    relative,
+                    "unofficial_automation_allowed must be false",
+                )
+            )
         profiles[str(profile.get("provider") or path.parent.name)] = profile
-    return profiles
+    return profiles, issues
+
+
+def _validate_config(root: Path) -> tuple[dict[str, Any], list[Issue]]:
+    path = root / "music.toml"
+    if not path.is_file():
+        return {}, []
+    try:
+        config = load_toml(path)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        return {}, [Issue("error", "config_parse", "music.toml", str(exc))]
+    issues: list[Issue] = []
+    expected_versions = {
+        "schema_version": SCHEMA_VERSION,
+        "template_version": TEMPLATE_VERSION,
+        "tool_version": TOOL_VERSION,
+    }
+    for field, expected in expected_versions.items():
+        if config.get(field) != expected:
+            issues.append(
+                Issue(
+                    "error",
+                    "config_version",
+                    "music.toml",
+                    f"expected {field}={expected!r}, got {config.get(field)!r}",
+                )
+            )
+    normalized_config = dict(config)
+    tables = {
+        "project": "config_project",
+        "candidate_retention": "config_retention",
+        "storage": "config_storage",
+        "import_limits": "config_import_limits",
+        "external_tools": "config_external_tools",
+        "licenses": "config_licenses",
+    }
+    for field, code in tables.items():
+        value = config.get(field)
+        if not isinstance(value, dict):
+            issues.append(Issue("error", code, "music.toml", f"{field} must be a TOML table"))
+            normalized_config[field] = {}
+    project = _table(normalized_config.get("project"))
+    for field in ("project_id", "title", "default_provider", "timezone"):
+        if not isinstance(project.get(field), str) or not project.get(field):
+            issues.append(Issue("error", "config_project", "music.toml", f"missing project.{field}"))
+    retention = _table(normalized_config.get("candidate_retention"))
+    mode = retention.get("mode")
+    if mode not in RETENTION_MODES:
+        issues.append(Issue("error", "config_retention", "music.toml", f"invalid retention mode: {mode}"))
+    if mode == "timed_local" and (
+        not isinstance(retention.get("days"), int) or retention.get("days", -1) < 0
+    ):
+        issues.append(Issue("error", "config_retention", "music.toml", "timed_local requires non-negative integer days"))
+    if mode == "external_archive" and not retention.get("archive_locator"):
+        issues.append(Issue("error", "config_retention", "music.toml", "external_archive requires archive_locator"))
+    storage = _table(normalized_config.get("storage"))
+    if storage.get("public_release_canonical") != "github_release":
+        issues.append(Issue("error", "config_storage", "music.toml", "public_release_canonical must be github_release"))
+    limits = _table(normalized_config.get("import_limits"))
+    for field in ("max_entries", "max_file_bytes", "max_total_bytes", "max_compression_ratio"):
+        value = limits.get(field)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+            issues.append(Issue("error", "config_import_limits", "music.toml", f"invalid import_limits.{field}"))
+    return normalized_config, issues
 
 
 def _check_lfs_attribute(root: Path, path: str) -> tuple[bool, str]:
@@ -209,10 +318,16 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                     f"missing required project file: {required_path}",
                 )
             )
+    config, config_issues = _validate_config(root)
+    issues.extend(config_issues)
     records, load_issues = load_records(root)
     issues.extend(load_issues)
     registry: dict[str, tuple[Path, dict[str, Any]]] = {}
-    profiles = _provider_profiles(root)
+    profiles, profile_issues = _provider_profiles(root)
+    issues.extend(profile_issues)
+    default_provider = str(_table(config.get("project")).get("default_provider") or "")
+    if default_provider and default_provider not in profiles:
+        issues.append(Issue("error", "config_provider", "music.toml", f"unknown default provider: {default_provider}"))
 
     for path, record in records:
         relative = path.relative_to(root).as_posix()
@@ -268,8 +383,10 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                     )
                 )
 
-        if record.get("status") == "sealed" or record.get("seal"):
-            seal = record.get("seal") or {}
+        if record_type in IMMUTABLE_RECORD_TYPES and record.get("status") != "sealed":
+            issues.append(Issue("error", "seal_required", relative, f"{record_type} records must be sealed"))
+        if record_type in IMMUTABLE_RECORD_TYPES or record.get("status") == "sealed" or record.get("seal"):
+            seal = _table(record.get("seal"))
             if not seal.get("sealed") or seal.get("content_sha256") != canonical_hash(record):
                 issues.append(Issue("error", "seal_mismatch", relative, "sealed record content hash does not match"))
 
@@ -318,7 +435,18 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                 snapshot = resolve_inside(Path(terms_snapshot_ref), root, must_exist=True)
                 if not snapshot.is_file():
                     raise ValueError("not a file")
-            except (OSError, ValueError) as exc:
+                snapshot_relative = snapshot.relative_to(root.resolve()).parts
+                provider = str(record.get("provider") or "")
+                if snapshot_relative[:3] != ("policies", "platforms", provider):
+                    raise ValueError("snapshot path does not match the record provider")
+                snapshot_record = load_toml(snapshot)
+                if snapshot_record.get("provider") != provider:
+                    raise ValueError("snapshot provider does not match the record provider")
+                if record.get("terms_snapshot_sha256") != sha256_file(snapshot):
+                    raise ValueError("snapshot SHA-256 does not match")
+                if terms_snapshot_ref != snapshot.relative_to(root.resolve()).as_posix():
+                    raise ValueError("snapshot reference is not a canonical repository-relative path")
+            except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
                 issues.append(
                     Issue(
                         "error",
@@ -328,7 +456,7 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                     )
                 )
 
-        if record_type in {"generation", "edit"}:
+        if record_type in {"generation", "edit", "export"}:
             provider = str(record.get("provider") or "")
             profile = profiles.get(provider)
             if not profile:
@@ -337,15 +465,21 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                 profile_version = str(profile.get("profile_version") or "")
                 if record.get("provider_profile_version") != profile_version:
                     issues.append(Issue("error", "provider_version", relative, f"expected provider profile {profile_version}"))
-                required_fields = ((profile.get("required") or {}).get(record_type) or {}).get("fields") or []
+                required_fields = _table(
+                    _table(profile.get("required")).get(record_type)
+                ).get("fields") or []
                 for field in required_fields:
                     if record.get(field) in (None, "", []):
                         issues.append(Issue("error", "provider_required", relative, f"missing provider field: {field}"))
-                operation_key = "generation_operations" if record_type == "generation" else "edit_operations"
+                operation_key = {
+                    "generation": "generation_operations",
+                    "edit": "edit_operations",
+                    "export": "export_operations",
+                }[record_type]
                 if record.get("provider_operation") not in (profile.get(operation_key) or []):
                     issues.append(Issue("error", "provider_operation", relative, f"unsupported operation: {record.get('provider_operation')}"))
-                allowed_data = set(((profile.get("provider_data") or {}).get("allowed_keys") or []))
-                unknown = set((record.get("provider_data") or {})) - allowed_data
+                allowed_data = set(_table(profile.get("provider_data")).get("allowed_keys") or [])
+                unknown = set(_table(record.get("provider_data"))) - allowed_data
                 if unknown:
                     issues.append(Issue("error", "provider_data", relative, f"unknown provider_data keys: {', '.join(sorted(unknown))}"))
 
@@ -373,6 +507,48 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                 continue
             if _resolve_ref(reference, record, registry) is None:
                 issues.append(Issue("error", "missing_ref", relative, f"{field} points to missing or ambiguous {reference}"))
+
+    rights_by_subject: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for _, record in records:
+        if record.get("record_type") == "rights_evidence":
+            rights_by_subject.setdefault(
+                (str(record.get("track_ref") or ""), str(record.get("subject_ref") or "")),
+                [],
+            ).append(record)
+    for path, record in records:
+        if record.get("record_type") not in {"generation", "edit"}:
+            continue
+        profile = profiles.get(str(record.get("provider") or "")) or {}
+        rules = _table(profile.get("rights"))
+        provider_data = _table(record.get("provider_data"))
+        requires_voice = bool(rules.get("voice_requires_evidence")) and any(
+            provider_data.get(key) not in (None, "", False) for key in ("voice", "persona")
+        )
+        requires_input = bool(rules.get("uploaded_audio_requires_evidence")) and bool(
+            record.get("input_refs")
+        )
+        if not (requires_voice or requires_input):
+            continue
+        evidence = rights_by_subject.get(
+            (str(record.get("track_ref") or ""), str(record.get("record_id") or "")),
+            [],
+        )
+        covered = any(
+            item.get("human_status") == "confirmed"
+            and item.get("human_confirmed")
+            and item.get("status") == "sealed"
+            and _table(item.get("seal")).get("content_sha256") == canonical_hash(item)
+            for item in evidence
+        )
+        if not covered:
+            issues.append(
+                Issue(
+                    "error",
+                    "provider_rights",
+                    path.relative_to(root).as_posix(),
+                    "provider profile requires confirmed rights evidence for this event",
+                )
+            )
 
     graph: dict[str, list[str]] = {}
     for path, record in records:
@@ -406,6 +582,18 @@ def validate(root: Path, level: str) -> dict[str, Any]:
         visit(node)
 
     if LEVELS[level] >= LEVELS["post"]:
+        github_release_asset_refs = {
+            str(item.get("asset_ref") or "")
+            for _, item in records
+            if item.get("record_type") == "asset_location"
+            and item.get("storage") == "github_release"
+            and str(item.get("archived_locator") or "").startswith(
+                "https://github.com/"
+            )
+            and item.get("status") == "sealed"
+            and _table(item.get("seal")).get("content_sha256")
+            == canonical_hash(item)
+        }
         for path, record in records:
             if record.get("record_type") not in {"lyrics", "prompt", "asset_location"}:
                 continue
@@ -446,6 +634,12 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                     asset_path = resolve_inside(Path(local_path), root, must_exist=True)
                     actual = sha256_file(asset_path)
                 except (OSError, ValueError) as exc:
+                    if (
+                        storage == "release_staging"
+                        and str(record.get("asset_ref") or "")
+                        in github_release_asset_refs
+                    ):
+                        continue
                     issues.append(Issue("error", "asset_path", relative, str(exc)))
                     continue
                 if actual != expected:
@@ -454,6 +648,17 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                     is_lfs, detail = _check_lfs_attribute(root, local_path)
                     if not is_lfs:
                         issues.append(Issue("error", "lfs_policy", relative, f"asset is not covered by Git LFS: {detail}"))
+            elif storage == "github_release":
+                locator = str(record.get("archived_locator") or "")
+                if not locator.startswith("https://github.com/"):
+                    issues.append(
+                        Issue(
+                            "error",
+                            "asset_location",
+                            relative,
+                            "github_release requires a GitHub HTTPS locator",
+                        )
+                    )
             elif storage == "external_archive" and not record.get("archived_locator"):
                 issues.append(
                     Issue(
@@ -507,11 +712,15 @@ def _validate_releases(
         return
     for path, record in releases:
         relative = path.relative_to(root).as_posix()
-        if not record.get("frozen", {}).get("value"):
+        frozen = _table(record.get("frozen"))
+        if not frozen.get("value"):
             issues.append(Issue("error", "release_not_frozen", relative, "release candidate is not frozen"))
         master = _resolve_ref(str(record.get("master_ref") or ""), record, registry)
         if not master or master[1].get("record_type") != "asset":
             issues.append(Issue("error", "master_ref", relative, "master_ref must resolve to an asset"))
+        master_digest = (
+            str(master[1].get("sha256") or "").removeprefix("sha256:") if master else ""
+        )
         raw_review_refs = record.get("listening_gate_refs")
         review_refs = (
             raw_review_refs
@@ -529,9 +738,11 @@ def _validate_releases(
                 not review
                 or review[1].get("record_type") != "review"
                 or review[1].get("status") != "sealed"
-                or (review[1].get("seal") or {}).get("content_sha256") != canonical_hash(review[1])
+                or _table(review[1].get("seal")).get("content_sha256") != canonical_hash(review[1])
                 or review[1].get("decision") not in {"approved", "selected"}
                 or not review[1].get("human_confirmed")
+                or str(review[1].get("subject_sha256") or "").removeprefix("sha256:")
+                != master_digest
             ):
                 issues.append(Issue("error", "listening_gate", relative, f"invalid listening gate: {reference}"))
         raw_rights_refs = record.get("rights_refs")
@@ -543,17 +754,33 @@ def _validate_releases(
         )
         if raw_rights_refs != rights_refs:
             issues.append(Issue("error", "rights_gate", relative, "rights_refs must be a list of strings"))
-        override = record.get("human_override") or {}
+        override = _table(record.get("human_override"))
         override_valid = all(override.get(field) for field in ("reason", "actor", "timestamp", "unresolved_risks"))
         if not rights_refs and not override_valid:
             issues.append(Issue("error", "rights_gate", relative, "missing rights evidence and no valid override"))
+        track_blockers = [
+            item
+            for _, item in records
+            if item.get("track_ref") == record.get("track_ref")
+            and item.get("record_type") == "rights_evidence"
+            and item.get("human_status") == "known_unlicensed"
+        ]
+        if track_blockers:
+            issues.append(
+                Issue(
+                    "error",
+                    "known_unlicensed",
+                    relative,
+                    "track contains non-overridable known_unlicensed evidence",
+                )
+            )
         for reference in rights_refs:
             evidence = _resolve_ref(reference, record, registry)
             if (
                 not evidence
                 or evidence[1].get("record_type") != "rights_evidence"
                 or evidence[1].get("status") != "sealed"
-                or (evidence[1].get("seal") or {}).get("content_sha256") != canonical_hash(evidence[1])
+                or _table(evidence[1].get("seal")).get("content_sha256") != canonical_hash(evidence[1])
                 or not evidence[1].get("human_confirmed")
             ):
                 issues.append(Issue("error", "rights_gate", relative, f"invalid rights evidence: {reference}"))
@@ -563,7 +790,10 @@ def _validate_releases(
                 issues.append(Issue("error", "known_unlicensed", relative, f"non-overridable rights blocker: {reference}"))
             elif human_status != "confirmed" and not override_valid:
                 issues.append(Issue("error", "rights_gate", relative, f"unconfirmed rights evidence: {reference}"))
-        frozen_files = list(record.get("frozen_files") or [])
+        raw_frozen_files = record.get("frozen_files")
+        frozen_files = raw_frozen_files if isinstance(raw_frozen_files, list) else []
+        if raw_frozen_files != frozen_files:
+            issues.append(Issue("error", "frozen_file", relative, "frozen_files must be a list of tables"))
         frozen_by_kind: dict[str, list[dict[str, Any]]] = {}
         for item in frozen_files:
             if not isinstance(item, dict):
@@ -590,14 +820,107 @@ def _validate_releases(
             "metadata": str(record.get("metadata_path") or ""),
             "gate": str(record.get("gate_path") or ""),
             "checksums": str(record.get("checksums_path") or ""),
+            "analysis": str(record.get("analysis_path") or ""),
         }
         for kind, expected_path in required_frozen.items():
             paths = [str(item.get("path") or "") for item in frozen_by_kind.get(kind, [])]
             if paths != [expected_path]:
                 issues.append(Issue("error", "frozen_file", relative, f"missing or inconsistent frozen {kind}"))
         policy_paths = [str(item.get("path") or "") for item in frozen_by_kind.get("policy_snapshot", [])]
-        if policy_paths != list(record.get("policy_snapshot_refs") or []):
+        raw_policy_refs = record.get("policy_snapshot_refs")
+        policy_refs = raw_policy_refs if isinstance(raw_policy_refs, list) else []
+        if policy_paths != policy_refs:
             issues.append(Issue("error", "policy_snapshot", relative, "frozen policy snapshots are inconsistent"))
+        policy_providers: set[str] = set()
+        for item in frozen_by_kind.get("policy_snapshot", []):
+            provider = str(item.get("provider") or "")
+            policy_path = str(item.get("path") or "")
+            try:
+                resolved_policy = resolve_inside(Path(policy_path), root, must_exist=True)
+                policy_relative = resolved_policy.relative_to(root.resolve()).parts
+                policy = load_toml(resolved_policy)
+                if (
+                    len(policy_relative) < 4
+                    or policy_relative[:2] != ("policies", "platforms")
+                    or policy_relative[2] != provider
+                    or policy.get("provider") != provider
+                    or not all(policy.get(field) for field in ("snapshot_id", "provider", "retrieved_at"))
+                ):
+                    raise ValueError("policy snapshot identity is incomplete or mismatched")
+                policy_providers.add(provider)
+            except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+                issues.append(Issue("error", "policy_snapshot", relative, f"invalid policy snapshot: {exc}"))
+        track_providers = {
+            str(item.get("provider") or "")
+            for _, item in records
+            if item.get("track_ref") == record.get("track_ref")
+            and item.get("record_type") in {"generation", "edit", "export"}
+            and item.get("provider")
+        }
+        missing_policy_providers = sorted(track_providers - policy_providers)
+        if missing_policy_providers:
+            issues.append(
+                Issue(
+                    "error",
+                    "policy_snapshot",
+                    relative,
+                    "missing frozen provider policy snapshots: "
+                    + ", ".join(missing_policy_providers),
+                )
+            )
+        frozen_policy_identities = {
+            (str(item.get("path") or ""), str(item.get("sha256") or ""))
+            for item in frozen_by_kind.get("policy_snapshot", [])
+        }
+        required_generation_snapshots = {
+            (
+                str(item.get("terms_snapshot_ref") or ""),
+                str(item.get("terms_snapshot_sha256") or ""),
+            )
+            for _, item in records
+            if item.get("track_ref") == record.get("track_ref")
+            and item.get("record_type") == "generation"
+            and item.get("terms_snapshot_ref")
+        }
+        if required_generation_snapshots - frozen_policy_identities:
+            issues.append(
+                Issue(
+                    "error",
+                    "policy_snapshot",
+                    relative,
+                    "release does not freeze every exact generation policy snapshot",
+                )
+            )
+
+        analysis_path = str(record.get("analysis_path") or "")
+        try:
+            analysis = json.loads(
+                resolve_inside(Path(analysis_path), root, must_exist=True).read_text(
+                    encoding="utf-8"
+                )
+            )
+            if not isinstance(analysis, dict):
+                raise ValueError("analysis root must be an object")
+            probe = _table(analysis.get("probe"))
+            streams = probe.get("streams") or []
+            if not isinstance(streams, list):
+                raise ValueError("analysis streams must be a list")
+            audio_streams = [
+                stream
+                for stream in streams
+                if isinstance(stream, dict) and stream.get("codec_type") == "audio"
+            ]
+            duration = float(_table(probe.get("format")).get("duration") or 0)
+            if (
+                analysis.get("source_sha256") != master_digest
+                or not analysis.get("measurement_only")
+                or analysis.get("quality_conclusion") is not None
+                or not audio_streams
+                or duration <= 0
+            ):
+                raise ValueError("analysis is not a hash-bound positive-duration audio measurement")
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            issues.append(Issue("error", "audio_analysis", relative, str(exc)))
 
         gate_path = str(record.get("gate_path") or "")
         try:
@@ -608,7 +931,7 @@ def _validate_releases(
             expected_gate_values = {
                 "listening_gate_refs": review_refs,
                 "rights_refs": rights_refs,
-                "policy_snapshot_refs": list(record.get("policy_snapshot_refs") or []),
+                "policy_snapshot_refs": policy_refs,
             }
             for field, expected_value in expected_gate_values.items():
                 if gate.get(field) != expected_value:

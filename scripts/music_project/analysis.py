@@ -46,7 +46,6 @@ def analyze_audio(root: Path, source: Path, output: Path) -> dict[str, Any]:
     report = {
         "schema_version": "0.1",
         "analyzed_at": now_iso(),
-        "source": str(source),
         "source_sha256": sha256_file(source),
         "tool": "ffprobe",
         "measurement_only": True,

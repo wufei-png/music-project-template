@@ -23,7 +23,13 @@ from .records import common_record, seal_record
 
 
 BUCKETS = {"inputs", "selected", "stems", "milestones"}
-STORAGES = {"git_lfs", "release_staging", "metadata_only", "external_archive"}
+STORAGES = {
+    "git_lfs",
+    "release_staging",
+    "github_release",
+    "metadata_only",
+    "external_archive",
+}
 
 
 def _asset_record_path(root: Path, asset_id: str) -> Path:
@@ -71,8 +77,8 @@ def create_asset_record(
         raise ValueError(f"unknown asset storage: {storage}")
     if storage in {"git_lfs", "release_staging"} and not local_path:
         raise ValueError(f"{storage} requires local_path")
-    if storage == "external_archive" and not archived_locator:
-        raise ValueError("external_archive requires archived_locator")
+    if storage in {"external_archive", "github_release"} and not archived_locator:
+        raise ValueError(f"{storage} requires archived_locator")
     asset_ref = f"asset:{asset_id}"
     location_identity = {
         "asset_ref": asset_ref,
@@ -185,7 +191,8 @@ def _import_one(
     )
     return {
         "asset_ref": asset_ref,
-        "asset_record": relative_path(record_path, root),
+        "asset_record": f"assets/records/{asset_ref.removeprefix('asset:')}.toml",
+        "asset_location_record": relative_path(record_path, root),
         "path": relative_path(destination, root),
         "sha256": digest,
     }

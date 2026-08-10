@@ -13,6 +13,8 @@ from .io import (
     load_toml,
     now_iso,
     parse_key_values,
+    relative_path,
+    resolve_inside,
     validate_identifier,
 )
 
@@ -143,6 +145,9 @@ def register_generation(
     provider_data: list[str],
 ) -> Path:
     track = _track_directory(root, track_id)
+    terms_snapshot_ref, terms_snapshot_sha256 = _policy_snapshot(
+        root, provider, terms_snapshot_ref
+    )
     record_id = _next_id(track / "generations", "g", "generation")
     record = common_record("generation", record_id, actor=actor)
     record.update(
@@ -156,6 +161,7 @@ def register_generation(
             "provider_object_id": object_id,
             "plan_at_operation": plan,
             "terms_snapshot_ref": terms_snapshot_ref,
+            "terms_snapshot_sha256": terms_snapshot_sha256,
             "prompt_ref": prompt_ref,
             "lyrics_ref": lyrics_ref,
             "parent_refs": parent_refs,
@@ -205,6 +211,42 @@ def register_edit(
     return path
 
 
+def register_export(
+    root: Path,
+    *,
+    track_id: str,
+    actor: str,
+    provider: str,
+    operation: str,
+    occurred_at: str,
+    parent_refs: list[str],
+    input_refs: list[str],
+    output_refs: list[str],
+    provider_data: list[str],
+) -> Path:
+    if not parent_refs:
+        raise ValueError("an export requires at least one parent-ref")
+    track = _track_directory(root, track_id)
+    record_id = _next_id(track / "exports", "x", "export")
+    record = common_record("export", record_id, actor=actor)
+    record.update(
+        {
+            "track_ref": f"track:{track_id}",
+            "occurred_at": occurred_at or now_iso(),
+            "provider": provider,
+            "provider_profile_version": _provider_version(root, provider),
+            "provider_operation": operation,
+            "parent_refs": parent_refs,
+            "input_refs": input_refs,
+            "output_refs": output_refs,
+            "provider_data": parse_key_values(provider_data),
+        }
+    )
+    path = track / "exports" / f"{record_id}.toml"
+    atomic_write_toml(path, seal_record(record))
+    return path
+
+
 def register_render(
     root: Path,
     *,
@@ -245,6 +287,7 @@ def record_review(
     decision: str,
     blind_label: str,
     timestamp_notes: str,
+    subject_sha256: str = "",
 ) -> Path:
     allowed = {"relisten", "shortlist", "selected", "needs_work", "rejected", "approved"}
     if decision not in allowed:
@@ -256,6 +299,7 @@ def record_review(
         {
             "track_ref": f"track:{track_id}",
             "subject_ref": subject_ref,
+            "subject_sha256": subject_sha256.removeprefix("sha256:"),
             "reviewer": actor,
             "blind_label": blind_label,
             "decision": decision,
@@ -272,6 +316,7 @@ def record_review(
             [
                 record_id,
                 subject_ref,
+                subject_sha256.removeprefix("sha256:"),
                 actor,
                 blind_label,
                 decision,
@@ -328,6 +373,19 @@ def _provider_version(root: Path, provider: str) -> str:
     if not profile.is_file():
         raise FileNotFoundError(f"unknown provider profile: {provider}")
     return str(load_toml(profile).get("profile_version", ""))
+
+
+def _policy_snapshot(root: Path, provider: str, reference: str) -> tuple[str, str]:
+    if not reference:
+        return "", ""
+    snapshot = resolve_inside(Path(reference), root, must_exist=True)
+    snapshot.relative_to((root / "policies" / "platforms" / provider).resolve())
+    data = load_toml(snapshot)
+    if data.get("provider") != provider:
+        raise ValueError("terms snapshot provider does not match generation provider")
+    from .io import sha256_file
+
+    return relative_path(snapshot, root), sha256_file(snapshot)
 
 
 def template_version() -> str:

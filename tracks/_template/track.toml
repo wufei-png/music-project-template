@@ -9,7 +9,7 @@ status = "active"
 track_id = "__TRACK_ID__"
 title = "__TITLE__"
 workflow_state = "briefing"
-default_provider = "suno"
+default_provider = ""
 
 [candidate_retention]
 inherit = true
