@@ -1,0 +1,18 @@
+schema_version = "0.1"
+record_type = "track"
+record_id = "track:__TRACK_ID__"
+created_at = "__CREATED_AT__"
+created_by = "__CREATED_BY__"
+created_with = "music-project-template 0.1.0"
+status = "active"
+
+track_id = "__TRACK_ID__"
+title = "__TITLE__"
+workflow_state = "briefing"
+default_provider = "suno"
+
+[candidate_retention]
+inherit = true
+mode = ""
+days = 0
+archive_locator = ""

@@ -1,0 +1,35 @@
+schema_version = "0.1"
+template_version = "0.1.0"
+tool_version = "0.1.0"
+created_with = "music-project-template 0.1.0"
+
+[project]
+project_id = "music-project-template"
+title = "Music Project Template"
+default_provider = "suno"
+timezone = "UTC"
+
+[candidate_retention]
+mode = "timed_local"
+days = 90
+archive_locator = ""
+
+[storage]
+selected_sources = "git_lfs"
+necessary_stems = "git_lfs"
+milestones = "git_lfs"
+public_release_canonical = "github_release"
+rejected_candidates = "policy"
+
+[import_limits]
+max_entries = 1000
+max_file_bytes = 2147483648
+max_total_bytes = 10737418240
+max_compression_ratio = 200.0
+
+[external_tools]
+ffprobe_timeout_seconds = 30
+
+[licenses]
+template = "MIT"
+music_content = "project_defined"

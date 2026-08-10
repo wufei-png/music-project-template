@@ -1,0 +1,13 @@
+schema_version = "0.1"
+record_type = "lyrics"
+record_id = "lyrics:l001"
+created_at = "__CREATED_AT__"
+created_by = "__CREATED_BY__"
+created_with = "music-project-template 0.1.0"
+status = "draft"
+
+track_ref = "track:__TRACK_ID__"
+language = "instrumental"
+text_path = "tracks/__TRACK_ID__/lyrics/l001.md"
+sha256 = ""
+contributors = []

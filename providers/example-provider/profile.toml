@@ -1,0 +1,23 @@
+profile_version = "1"
+provider = "example-provider"
+mode = "fixture_only"
+official_api_required = false
+unofficial_automation_allowed = false
+
+generation_operations = ["create"]
+edit_operations = ["revise"]
+export_operations = ["download"]
+
+[required.generation]
+fields = ["occurred_at", "model", "provider_object_id", "prompt_ref"]
+
+[required.edit]
+fields = ["occurred_at", "provider_operation", "parent_refs"]
+
+[rights]
+voice_requires_evidence = false
+uploaded_audio_requires_evidence = true
+plan_is_evidence_not_legal_conclusion = true
+
+[provider_data]
+allowed_keys = ["fixture_strength"]

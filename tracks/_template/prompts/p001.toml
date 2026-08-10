@@ -1,0 +1,15 @@
+schema_version = "0.1"
+record_type = "prompt"
+record_id = "prompt:p001"
+created_at = "__CREATED_AT__"
+created_by = "__CREATED_BY__"
+created_with = "music-project-template 0.1.0"
+status = "draft"
+
+track_ref = "track:__TRACK_ID__"
+provider_target = "suno"
+text_path = "tracks/__TRACK_ID__/prompts/p001.md"
+sha256 = ""
+parent_refs = []
+experiment_axis = "initial"
+hypothesis = ""

@@ -1,0 +1,25 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.coverage
+.private/
+
+# Rejected candidates are governed by music.toml, never committed by default.
+assets/candidates-local/*
+!assets/candidates-local/.gitkeep
+
+# Prepared public assets live here only until a human uploads a GitHub Release.
+releases/.staging/
+
+# Raw analysis is reproducible; committed gates contain only required summaries.
+tracks/*/analysis/*.json
+
+# Retention plans are local, point-in-time execution inputs.
+reports/retention/*.json
+!reports/retention/.gitkeep
+
+# Mutable DAW packages and caches. Commit explicit zipped milestones only.
+*.band/
+*.logicx/
+*.aup3-wal
+*.aup3-shm
