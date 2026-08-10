@@ -1,0 +1,29 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Git LFS
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes git-lfs
+          git lfs install --local
+      - name: Compile and test
+        run: |
+          python -m compileall -q scripts tests
+          python -m unittest discover -v
+          python scripts/music.py validate --level minimal
