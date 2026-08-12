@@ -37,25 +37,39 @@ python3 scripts/music.py new-track --track-id night-rain --title "Night Rain"
 python3 scripts/music.py validate --level minimal
 ```
 
-Common commands:
+The evidence API accepts one JSON Event Envelope at a time. The root is always
+explicit for event operations:
 
 ```bash
-python3 scripts/music.py status
-python3 scripts/music.py register-generation --help
-python3 scripts/music.py register-edit --help
-python3 scripts/music.py register-export --help
-python3 scripts/music.py record-review --help
-python3 scripts/music.py safe-import --help
-python3 scripts/music.py analyze-audio --help
-python3 scripts/music.py retention-plan
-python3 scripts/music.py freeze-release --help
+python3 scripts/music.py --root "$PWD" plan-event /tmp/event.json
+python3 scripts/music.py --root "$PWD" apply-event /tmp/event.json --confirm
 ```
 
-Release freezing requires `ffprobe` (provided by FFmpeg) so a non-audio or
-zero-duration file cannot be recorded as the final master.
+`generation`, `edit`, `export`, `render`, `review`, `rights_evidence`, and
+`release_candidate` share this interface. Each submission has a caller-created
+UUID and may be retried with the same envelope. The resulting sealed record is
+the authoritative receipt. Release candidates additionally require the exact
+Release Plan Receipt returned by `plan-event`:
 
-The v0.1 delivery is repository-local and is not published as a PyPI package.
-See `docs/workflow.md` and `docs/domain-model.md` for the contract.
+```bash
+python3 scripts/music.py --root "$PWD" plan-event /tmp/release.json > /tmp/release-plan.json
+python3 scripts/music.py --root "$PWD" apply-event /tmp/release.json \
+  --plan-receipt /tmp/release-plan.json --confirm
+```
+
+The convenience commands such as `register-generation`, `record-review`, and
+`freeze-release` route through the same event service; they do not bypass its
+lock, validation, idempotency, or release-plan rules. Asset import, text
+hashing, retention, validation, and publication remain separate commands.
+
+Release preparation requires `ffprobe` (provided by FFmpeg) so a non-audio or
+zero-duration file cannot become a release candidate. `PASS_WITH_OVERRIDE`
+does not mean rights-cleared, and publication is always a separate decision.
+
+This repository-local toolkit currently supports local filesystems only; it
+does not promise correct locking on NFS, SMB, or cloud-synchronized folders.
+See `docs/event-api.md`, `docs/workflow.md`, and `docs/domain-model.md` for the
+contract.
 
 ## Licenses
 

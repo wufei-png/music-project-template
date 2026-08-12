@@ -17,6 +17,9 @@ drift after planning.
 The apply phase quarantines and verifies the complete eligible batch before it
 creates canonical evidence; preparation failure restores every candidate.
 
-Release staging is temporary. `record-publication` registers the matching
-GitHub download URL as a canonical asset location; after that record is sealed,
-the staged local copy may be removed.
+Release-candidate apply builds a complete bundle below
+`releases/.staging/<submission-id>/`, then atomically renames it into its final
+`releases/rcNNN/` directory. An unrelated staging directory is never removed.
+The sealed `rc.toml` binds every output and is the commit receipt.
+`record-publication` later registers the matching GitHub download URL as a
+canonical asset location; publication is not implied by release staging.
