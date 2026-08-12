@@ -34,8 +34,11 @@ class MusicEvidenceSkillTests(unittest.TestCase):
             "do not create a parallel receipt file",
             "do not search broadly",
             "do not initialize one",
+            "may be outside the ledger",
+            "never invoke publication commands within this skill",
         ):
             self.assertIn(required, normalized)
+        self.assertNotIn("publication commands unless the user asks", normalized)
 
     def test_openai_metadata_names_the_skill_in_default_prompt(self) -> None:
         text = OPENAI.read_text(encoding="utf-8")

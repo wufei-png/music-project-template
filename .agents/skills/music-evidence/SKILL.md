@@ -70,7 +70,14 @@ Every envelope must:
 - declare `submitted_by: {type, id}` where type is `human`, `agent`, or
   `automation`
 - preserve the same submission ID and exact envelope for retries
-- refer only to records and assets already present in the target ledger
+- refer only to typed record and asset references already present in the target
+  ledger
+
+A `release_candidate` master is a file input, not a typed asset reference. A
+user-supplied absolute master path may be outside the ledger, which supports a
+separate evidence ledger for another music project. Do not import that file
+merely to satisfy this Skill. The Release Plan Receipt must still bind its exact
+path, SHA-256, size, and master-bound human listening gate.
 
 Create a UUID without relying on uppercase `uuidgen` output:
 
@@ -161,8 +168,9 @@ error or retry idempotently.
 
 A sealed Release Candidate records preparation, not publication. `PASS` is a
 mechanical ledger outcome, not a legal conclusion. `PASS_WITH_OVERRIDE` retains
-unresolved rights. Do not invoke publication commands unless the user asks for
-that separate governance action and its requirements are independently met.
+unresolved rights. Never invoke publication commands within this Skill. If the
+user requests publication, report that it requires a separate governance
+workflow and hand off without performing it here.
 
 The ledger lock is intended for a local filesystem only. Do not claim support
 for NFS, SMB, or cloud-synchronized directories.
