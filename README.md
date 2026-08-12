@@ -71,6 +71,16 @@ does not promise correct locking on NFS, SMB, or cloud-synchronized folders.
 See `docs/event-api.md`, `docs/workflow.md`, and `docs/domain-model.md` for the
 contract.
 
+## Optional Agent Skill
+
+`.agents/skills/music-evidence` is a host-neutral procedure for inspecting an
+already initialized ledger and preparing, planning, confirming, or retrying one
+evidence event. A source music project can use a separate
+music-project-template checkout as its evidence ledger by supplying that
+ledger's root explicitly. The Skill does not parse creative workspaces,
+initialize ledgers, import assets, publish releases, or duplicate the event
+schema and transaction logic.
+
 ## Licenses
 
 Repository code and template-owned content use the MIT License. Content added

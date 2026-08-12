@@ -1,0 +1,4 @@
+interface:
+  display_name: "Music Evidence"
+  short_description: "Record verified music events in an evidence ledger"
+  default_prompt: "Use $music-evidence to inspect an existing music evidence ledger and prepare one confirmed event."
