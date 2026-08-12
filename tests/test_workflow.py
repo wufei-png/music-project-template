@@ -6,6 +6,7 @@ import zipfile
 import os
 import json
 import subprocess
+import uuid
 import wave
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
@@ -14,22 +15,134 @@ from pathlib import Path
 
 from scripts.music_project.assets import create_asset_record, safe_import
 from scripts.music_project.cli import _hash_text, initialize_project, main as cli_main
-from scripts.music_project.io import atomic_write_toml, load_toml, sha256_file
-from scripts.music_project.records import (
-    _next_id,
-    new_track,
-    record_review,
-    record_rights,
-    register_export,
-    register_generation,
-    seal_record,
-)
-from scripts.music_project.release import freeze_release, record_publication
+from scripts.music_project.events import LedgerError, apply_event, plan_event
+from scripts.music_project.io import atomic_write_toml, load_toml, parse_key_values, sha256_file
+from scripts.music_project.locking import LedgerLock
+from scripts.music_project.records import _next_id, new_track, seal_record
+from scripts.music_project.release import record_publication
 from scripts.music_project.retention import apply_plan, build_plan, effective_policy
 from scripts.music_project.validation import validate
 
 
 ACTOR = "fixture-user"
+
+
+def _apply_test_event(
+    root: Path,
+    event_type: str,
+    track_id: str,
+    payload: dict[str, object],
+    actor: str,
+    responsibility: str = "",
+) -> Path:
+    envelope: dict[str, object] = {
+        "schema_version": "1.0",
+        "event_type": event_type,
+        "submission_id": str(uuid.uuid4()),
+        "submitted_by": {"type": "human", "id": actor},
+        "track_id": track_id,
+        "payload": payload,
+    }
+    if responsibility:
+        envelope[f"{responsibility}_by"] = {"type": "human", "id": actor}
+    result = apply_event(root, envelope, confirmed=True)
+    return root / str(result["record_path"])
+
+
+def register_generation(root: Path, **values: object) -> Path:
+    actor = str(values.pop("actor"))
+    track_id = str(values.pop("track_id"))
+    payload = {
+        "provider": values.pop("provider"),
+        "operation": values.pop("operation"),
+        "occurred_at": values.pop("occurred_at"),
+        "model": values.pop("model"),
+        "object_id": values.pop("object_id"),
+        "plan": values.pop("plan"),
+        "prompt_ref": values.pop("prompt_ref"),
+        "lyrics_ref": values.pop("lyrics_ref"),
+        "terms_snapshot_ref": values.pop("terms_snapshot_ref"),
+        "parent_refs": values.pop("parent_refs"),
+        "input_refs": values.pop("input_refs"),
+        "output_refs": values.pop("output_refs"),
+        "provider_data": parse_key_values(values.pop("provider_data")),
+    }
+    assert not values
+    return _apply_test_event(root, "generation", track_id, payload, actor)
+
+
+def register_export(root: Path, **values: object) -> Path:
+    actor = str(values.pop("actor"))
+    track_id = str(values.pop("track_id"))
+    payload = {
+        "provider": values.pop("provider"),
+        "operation": values.pop("operation"),
+        "occurred_at": values.pop("occurred_at"),
+        "parent_refs": values.pop("parent_refs"),
+        "input_refs": values.pop("input_refs"),
+        "output_refs": values.pop("output_refs"),
+        "provider_data": parse_key_values(values.pop("provider_data")),
+    }
+    assert not values
+    return _apply_test_event(root, "export", track_id, payload, actor)
+
+
+def record_review(root: Path, **values: object) -> Path:
+    actor = str(values.pop("actor"))
+    track_id = str(values.pop("track_id"))
+    payload = {
+        "subject_ref": values.pop("subject_ref"),
+        "subject_sha256": values.pop("subject_sha256", ""),
+        "decision": values.pop("decision"),
+        "blind_label": values.pop("blind_label"),
+        "timestamp_notes": values.pop("timestamp_notes"),
+    }
+    assert not values
+    return _apply_test_event(root, "review", track_id, payload, actor, "reviewed")
+
+
+def record_rights(root: Path, **values: object) -> Path:
+    actor = str(values.pop("actor"))
+    track_id = str(values.pop("track_id"))
+    payload = {
+        "subject_ref": values.pop("subject_ref"),
+        "source_type": values.pop("source_type"),
+        "human_status": values.pop("human_status"),
+        "evidence_ref": values.pop("evidence_ref", values.pop("private_locator", "")),
+        "evidence_sha256": values.pop("evidence_sha256"),
+        "public_note": values.pop("public_note"),
+    }
+    assert not values
+    return _apply_test_event(root, "rights_evidence", track_id, payload, actor, "assessed")
+
+
+def freeze_release(root: Path, **values: object) -> tuple[Path, str]:
+    actor = str(values.pop("actor"))
+    track_id = str(values.pop("track_id"))
+    confirmed = bool(values.pop("confirmed"))
+    values.pop("override_risks", [])
+    payload = {
+        "master": str(values.pop("master")),
+        "title": values.pop("title"),
+        "release_id": values.pop("release_id"),
+        "listening_gate_refs": values.pop("listening_gate_refs"),
+        "rights_refs": values.pop("rights_refs"),
+        "policy_snapshot_refs": values.pop("policy_snapshot_refs"),
+        "override_reason": values.pop("override_reason"),
+    }
+    assert not values
+    envelope = {
+        "schema_version": "1.0",
+        "event_type": "release_candidate",
+        "submission_id": str(uuid.uuid4()),
+        "submitted_by": {"type": "human", "id": actor},
+        "confirmed_by": {"type": "human", "id": actor},
+        "track_id": track_id,
+        "payload": payload,
+    }
+    receipt = plan_event(root, envelope)
+    result = apply_event(root, envelope, confirmed=confirmed, plan_receipt=receipt)
+    return root / str(result["record_path"]), str(result["record"]["gate_status"])
 
 
 class ProjectCase(unittest.TestCase):
@@ -154,26 +267,26 @@ class RecordValidationTests(ProjectCase):
     def test_missing_lineage_reference_fails(self) -> None:
         self.new_track()
         self.seal_texts()
-        register_generation(
-            self.root,
-            track_id="track-one",
-            actor=ACTOR,
-            provider="example-provider",
-            operation="create",
-            occurred_at="2026-08-10T10:00:00+08:00",
-            model="fixture-model",
-            object_id="fixture-2",
-            plan="",
-            prompt_ref="prompt:p001",
-            lyrics_ref="lyrics:l001",
-            terms_snapshot_ref="",
-            parent_refs=["generation:g999"],
-            input_refs=[],
-            output_refs=[],
-            provider_data=[],
-        )
-        report = validate(self.root, "minimal")
-        self.assertIn("missing_ref", {issue["code"] for issue in report["errors"]})
+        with self.assertRaisesRegex(LedgerError, "missing, ambiguous, or wrong type"):
+            register_generation(
+                self.root,
+                track_id="track-one",
+                actor=ACTOR,
+                provider="example-provider",
+                operation="create",
+                occurred_at="2026-08-10T10:00:00+08:00",
+                model="fixture-model",
+                object_id="fixture-2",
+                plan="",
+                prompt_ref="prompt:p001",
+                lyrics_ref="lyrics:l001",
+                terms_snapshot_ref="",
+                parent_refs=["generation:g999"],
+                input_refs=[],
+                output_refs=[],
+                provider_data=[],
+            )
+        self.assertFalse((self.root / "tracks/track-one/generations/g001.toml").exists())
 
     def test_canonical_records_reject_credential_fields(self) -> None:
         self.new_track()
@@ -201,7 +314,7 @@ class RecordValidationTests(ProjectCase):
             model="fixture-model",
             object_id="fixture-suno",
             plan="paid",
-            prompt_ref="not-a-reference",
+            prompt_ref="prompt:p001",
             lyrics_ref="lyrics:l001",
             terms_snapshot_ref="policies/platforms/suno/2026-08-10.toml",
             parent_refs=[],
@@ -210,6 +323,7 @@ class RecordValidationTests(ProjectCase):
             provider_data=[],
         )
         generation = load_toml(path)
+        generation["prompt_ref"] = "not-a-reference"
         generation["terms_snapshot_ref"] = "policies/platforms/suno/does-not-exist.toml"
         atomic_write_toml(path, seal_record(generation))
         report = validate(self.root, "post")
@@ -233,9 +347,9 @@ class RecordValidationTests(ProjectCase):
     def test_valid_toml_with_wrong_table_types_returns_structured_failure(self) -> None:
         config_path = self.root / "music.toml"
         config_path.write_text(
-            'schema_version = "0.1"\n'
-            'template_version = "0.1.0"\n'
-            'tool_version = "0.1.0"\n'
+            'schema_version = "1.0"\n'
+            'template_version = "0.2.0"\n'
+            'tool_version = "0.2.0"\n'
             'project = "not-a-table"\n'
             'candidate_retention = "not-a-table"\n'
             'storage = "not-a-table"\n'
@@ -264,7 +378,11 @@ class RecordValidationTests(ProjectCase):
                     "register-generation",
                     "--track-id",
                     "track-one",
-                    "--actor",
+                    "--submission-id",
+                    str(uuid.uuid4()),
+                    "--submitted-by-type",
+                    "human",
+                    "--submitted-by-id",
                     ACTOR,
                     "--model",
                     "fixture-model",
@@ -274,6 +392,7 @@ class RecordValidationTests(ProjectCase):
                     "prompt:p001",
                     "--lyrics-ref",
                     "lyrics:l001",
+                    "--confirm",
                 ]
             )
         self.assertEqual(result, 0)
@@ -412,7 +531,9 @@ class RecordValidationTests(ProjectCase):
         codes = {issue["code"] for issue in report["errors"]}
         self.assertEqual(report["status"], "FAIL")
         self.assertIn("seal_mismatch", codes)
-        self.assertIn("provider_rights", codes)
+        self.assertIn(
+            "provider_rights", {issue["code"] for issue in report["warnings"]}
+        )
 
     def test_provider_rights_rules_require_event_coverage(self) -> None:
         self.new_track()
@@ -436,7 +557,8 @@ class RecordValidationTests(ProjectCase):
             provider_data=["voice=fixture-voice"],
         )
         report = validate(self.root, "minimal")
-        self.assertIn("provider_rights", {issue["code"] for issue in report["errors"]})
+        self.assertEqual(report["status"], "PASS", report)
+        self.assertIn("provider_rights", {issue["code"] for issue in report["warnings"]})
         record_rights(
             self.root,
             track_id="track-one",
@@ -453,7 +575,7 @@ class RecordValidationTests(ProjectCase):
 
     def test_confirmed_rights_require_evidence_locator_and_hash(self) -> None:
         self.new_track()
-        with self.assertRaisesRegex(ValueError, "private-locator"):
+        with self.assertRaisesRegex(LedgerError, "evidence_ref"):
             record_rights(
                 self.root,
                 track_id="track-one",
@@ -471,6 +593,187 @@ class RecordValidationTests(ProjectCase):
         atomic_write_toml(directory / "g999.toml", {"record_type": "generation"})
         atomic_write_toml(directory / "g1000.toml", {"record_type": "generation"})
         self.assertEqual(_next_id(directory, "g", "generation"), "g1001")
+
+
+class EvidenceEventTests(ProjectCase):
+    def generation_envelope(self, submission_id: str | None = None) -> dict[str, object]:
+        return {
+            "schema_version": "1.0",
+            "event_type": "generation",
+            "submission_id": submission_id or str(uuid.uuid4()),
+            "submitted_by": {"type": "agent", "id": "studio-agent"},
+            "track_id": "track-one",
+            "payload": {
+                "provider": "example-provider",
+                "operation": "create",
+                "occurred_at": "2026-08-10T10:00:00+08:00",
+                "model": "fixture-model",
+                "object_id": "fixture-object",
+                "prompt_ref": "prompt:p001",
+                "lyrics_ref": "lyrics:l001",
+                "parent_refs": [],
+                "input_refs": [],
+                "output_refs": [],
+                "provider_data": {"fixture_strength": 2},
+            },
+        }
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.new_track()
+        self.seal_texts()
+
+    def test_submission_is_idempotent_and_sealed_record_is_the_receipt(self) -> None:
+        envelope = self.generation_envelope()
+        first = apply_event(self.root, envelope, confirmed=True)
+        second = apply_event(self.root, envelope, confirmed=True)
+        self.assertEqual(first["record_path"], second["record_path"])
+        self.assertEqual(second["status"], "idempotent")
+        record = load_toml(self.root / str(first["record_path"]))
+        self.assertEqual(record["submission_id"], envelope["submission_id"])
+        self.assertEqual(record["submitted_by"], envelope["submitted_by"])
+        self.assertEqual(record["output_binding"]["record_path"], first["record_path"])
+        self.assertTrue(record["seal"]["sealed"])
+        self.assertEqual(len(list((self.root / "tracks/track-one/generations").glob("g*.toml"))), 1)
+
+    def test_submission_conflict_fails_closed(self) -> None:
+        envelope = self.generation_envelope()
+        apply_event(self.root, envelope, confirmed=True)
+        changed = json.loads(json.dumps(envelope))
+        changed["payload"]["object_id"] = "different-object"
+        with self.assertRaisesRegex(LedgerError, "different envelope digest") as caught:
+            apply_event(self.root, changed, confirmed=True)
+        self.assertEqual(caught.exception.code, "submission_conflict")
+
+    def test_idempotency_rejects_a_tampered_authoritative_record(self) -> None:
+        envelope = self.generation_envelope()
+        result = apply_event(self.root, envelope, confirmed=True)
+        path = self.root / str(result["record_path"])
+        record = load_toml(path)
+        record["model"] = "tampered"
+        atomic_write_toml(path, record)
+        with self.assertRaises(LedgerError) as caught:
+            apply_event(self.root, envelope, confirmed=True)
+        self.assertEqual(caught.exception.code, "ledger_invalid")
+
+    def test_submission_id_must_use_canonical_lowercase_uuid(self) -> None:
+        envelope = self.generation_envelope()
+        envelope["submission_id"] = str(envelope["submission_id"]).upper()
+        with self.assertRaises(LedgerError) as caught:
+            apply_event(self.root, envelope, confirmed=True)
+        self.assertEqual(caught.exception.code, "invalid_envelope")
+
+    def test_ordinary_plan_is_informational_and_apply_revalidates(self) -> None:
+        envelope = self.generation_envelope()
+        plan = plan_event(self.root, envelope)
+        self.assertFalse(plan["binding_required"])
+        self.assertNotIn("plan_digest", plan)
+        result = apply_event(self.root, envelope, confirmed=True)
+        self.assertEqual(result["status"], "applied")
+
+    def test_lock_timeout_returns_stable_ledger_busy_error(self) -> None:
+        with LedgerLock(self.root, timeout=0):
+            with self.assertRaises(LedgerError) as caught:
+                plan_event(self.root, self.generation_envelope(), timeout=0)
+        self.assertEqual(caught.exception.code, "ledger_busy")
+        self.assertTrue((self.root / ".music-ledger.lock").is_file())
+
+    def test_lock_timeout_must_be_finite(self) -> None:
+        for timeout in (float("inf"), float("nan")):
+            with self.assertRaisesRegex(ValueError, "finite"):
+                LedgerLock(self.root, timeout=timeout)
+
+    def test_text_hash_writer_uses_the_ledger_lock(self) -> None:
+        with LedgerLock(self.root, timeout=0):
+            with self.assertRaises(LedgerError) as caught:
+                _hash_text(
+                    self.root,
+                    "track-one",
+                    "prompt",
+                    "p001",
+                    timeout=0,
+                )
+        self.assertEqual(caught.exception.code, "ledger_busy")
+
+    def test_rights_evidence_rejects_private_locator_shapes(self) -> None:
+        base = {
+            "schema_version": "1.0",
+            "event_type": "rights_evidence",
+            "submission_id": str(uuid.uuid4()),
+            "submitted_by": {"type": "agent", "id": "studio-agent"},
+            "assessed_by": {"type": "human", "id": ACTOR},
+            "track_id": "track-one",
+            "payload": {
+                "subject_ref": "track:track-one",
+                "source_type": "original",
+                "human_status": "confirmed",
+                "evidence_ref": "/Users/private/receipt.pdf",
+                "evidence_sha256": "a" * 64,
+            },
+        }
+        for unsafe in (
+            "/Users/private/receipt.pdf",
+            "file:///Users/private/receipt.pdf",
+            "https://user:pass@example.com/receipt",
+            "https://example.com/receipt?token=secret",
+        ):
+            envelope = json.loads(json.dumps(base))
+            envelope["submission_id"] = str(uuid.uuid4())
+            envelope["payload"]["evidence_ref"] = unsafe
+            with self.assertRaises(LedgerError) as caught:
+                apply_event(self.root, envelope, confirmed=True)
+            self.assertEqual(caught.exception.code, "unsafe_evidence_ref")
+
+    def test_domain_responsibility_must_be_declared_human(self) -> None:
+        envelope = {
+            "schema_version": "1.0",
+            "event_type": "review",
+            "submission_id": str(uuid.uuid4()),
+            "submitted_by": {"type": "agent", "id": "studio-agent"},
+            "reviewed_by": {"type": "agent", "id": "studio-agent"},
+            "track_id": "track-one",
+            "payload": {"subject_ref": "track:track-one", "decision": "approved"},
+        }
+        with self.assertRaisesRegex(LedgerError, "reviewed_by"):
+            apply_event(self.root, envelope, confirmed=True)
+
+    def test_optional_payload_fields_reject_non_scalar_shapes(self) -> None:
+        envelope = self.generation_envelope()
+        envelope["payload"]["provider_data"] = {"fixture_strength": [2]}
+        with self.assertRaises(LedgerError) as caught:
+            apply_event(self.root, envelope, confirmed=True)
+        self.assertEqual(caught.exception.code, "invalid_envelope")
+
+    def test_unsupported_schema_is_structured_and_not_migrated(self) -> None:
+        config_path = self.root / "music.toml"
+        config = load_toml(config_path)
+        config["schema_version"] = "0.1"
+        atomic_write_toml(config_path, config)
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            result = cli_main(["--root", str(self.root), "status"])
+        error = json.loads(stderr.getvalue())
+        self.assertEqual(result, 2)
+        self.assertEqual(error["error"]["code"], "unsupported_schema")
+        self.assertEqual(load_toml(config_path)["schema_version"], "0.1")
+
+    def test_event_cli_requires_explicit_root(self) -> None:
+        stderr = StringIO()
+        with redirect_stderr(stderr):
+            result = cli_main(["plan-event", "event.json"])
+        self.assertEqual(result, 2)
+        self.assertEqual(json.loads(stderr.getvalue())["error"]["code"], "root_required")
+
+    def test_ordinary_write_failure_leaves_no_authoritative_record(self) -> None:
+        with patch(
+            "scripts.music_project.events.atomic_write_toml",
+            side_effect=OSError("fixture write failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "fixture write failure"):
+                apply_event(self.root, self.generation_envelope(), confirmed=True)
+        self.assertEqual(
+            list((self.root / "tracks/track-one/generations").glob("g*.toml")), []
+        )
 
 
 class ImportTests(ProjectCase):
@@ -973,6 +1276,27 @@ class ReleaseTests(ProjectCase):
             **options,
         )
 
+    def release_envelope(
+        self, rights_refs: list[str], override_reason: str = ""
+    ) -> dict[str, object]:
+        return {
+            "schema_version": "1.0",
+            "event_type": "release_candidate",
+            "submission_id": str(uuid.uuid4()),
+            "submitted_by": {"type": "agent", "id": "studio-agent"},
+            "confirmed_by": {"type": "human", "id": ACTOR},
+            "track_id": "track-one",
+            "payload": {
+                "master": str(self.master),
+                "title": "Fixture Release",
+                "release_id": "rc001",
+                "listening_gate_refs": [self.review_ref],
+                "rights_refs": rights_refs,
+                "policy_snapshot_refs": [self.policy_ref],
+                "override_reason": override_reason,
+            },
+        }
+
     def test_confirmed_rights_freeze_and_publication(self) -> None:
         rc_path, gate = self.freeze([self.rights("confirmed")])
         self.assertEqual(gate, "PASS")
@@ -1005,6 +1329,104 @@ class ReleaseTests(ProjectCase):
                 confirmed=True,
             )
 
+    def test_release_requires_matching_plan_and_is_idempotent_after_commit(self) -> None:
+        envelope = self.release_envelope([self.rights("confirmed")])
+        receipt = plan_event(self.root, envelope)
+        applied = apply_event(
+            self.root, envelope, confirmed=True, plan_receipt=receipt
+        )
+        repeated = apply_event(self.root, envelope, confirmed=True)
+        self.assertEqual(applied["record_path"], repeated["record_path"])
+        self.assertEqual(repeated["status"], "idempotent")
+        self.assertEqual(
+            applied["record"]["plan_digest"], receipt["plan_digest"]
+        )
+
+    def test_release_plan_fails_closed_after_relevant_ledger_drift(self) -> None:
+        envelope = self.release_envelope([self.rights("confirmed")])
+        receipt = plan_event(self.root, envelope)
+        self.approved_review(subject_sha256=sha256_file(self.master))
+        with self.assertRaises(LedgerError) as caught:
+            apply_event(self.root, envelope, confirmed=True, plan_receipt=receipt)
+        self.assertEqual(caught.exception.code, "plan_stale")
+        self.assertFalse((self.root / "releases/rc001").exists())
+
+    def test_release_plan_binds_referenced_prompt_and_lyrics_hashes(self) -> None:
+        register_generation(
+            self.root,
+            track_id="track-one",
+            actor=ACTOR,
+            provider="suno",
+            operation="create",
+            occurred_at="2026-08-10T10:00:00+08:00",
+            model="fixture-model",
+            object_id="text-binding",
+            plan="paid",
+            prompt_ref="prompt:p001",
+            lyrics_ref="lyrics:l001",
+            terms_snapshot_ref=self.policy_ref,
+            parent_refs=[],
+            input_refs=[],
+            output_refs=[],
+            provider_data=[],
+        )
+        envelope = self.release_envelope([self.rights("confirmed")])
+        receipt = plan_event(self.root, envelope)
+        state = receipt["plan"]["ledger_state"]
+        bound = {
+            item["record_id"]: item["text_sha256"]
+            for item in state
+            if item["record_type"] in {"prompt", "lyrics"}
+        }
+        self.assertEqual(set(bound), {"prompt:p001", "lyrics:l001"})
+
+        prompt = self.root / "tracks/track-one/prompts/p001.md"
+        prompt.write_text("changed after planning\n", encoding="utf-8")
+        _hash_text(self.root, "track-one", "prompt", "p001")
+        with self.assertRaises(LedgerError) as caught:
+            apply_event(self.root, envelope, confirmed=True, plan_receipt=receipt)
+        self.assertEqual(caught.exception.code, "plan_stale")
+        self.assertFalse((self.root / "releases/rc001").exists())
+
+    def test_release_plan_receipt_rejects_content_tampering(self) -> None:
+        envelope = self.release_envelope([self.rights("confirmed")])
+        receipt = plan_event(self.root, envelope)
+        receipt["plan"]["expected_output"]["release_id"] = "rc999"
+        with self.assertRaises(LedgerError) as caught:
+            apply_event(self.root, envelope, confirmed=True, plan_receipt=receipt)
+        self.assertEqual(caught.exception.code, "invalid_plan_receipt")
+        self.assertFalse((self.root / "releases/rc001").exists())
+
+    def test_release_staging_failure_leaves_no_partial_release(self) -> None:
+        envelope = self.release_envelope([self.rights("confirmed")])
+        receipt = plan_event(self.root, envelope)
+        with patch(
+            "scripts.music_project.events.analyze_audio",
+            side_effect=RuntimeError("fixture analysis failure"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "fixture analysis failure"):
+                apply_event(self.root, envelope, confirmed=True, plan_receipt=receipt)
+        self.assertFalse((self.root / "releases/rc001").exists())
+        self.assertFalse(
+            (self.root / "releases/.staging" / str(envelope["submission_id"])).exists()
+        )
+
+    def test_unconfirmed_rights_use_minimal_override_without_clearance_claim(self) -> None:
+        envelope = self.release_envelope(
+            [self.rights("needs_review")], "receipt is still pending"
+        )
+        receipt = plan_event(self.root, envelope)
+        result = apply_event(
+            self.root, envelope, confirmed=True, plan_receipt=receipt
+        )
+        record = result["record"]
+        gate = load_toml(self.root / "releases/rc001/gate.toml")
+        self.assertEqual(record["gate_status"], "PASS_WITH_OVERRIDE")
+        self.assertEqual(record["override_reason"], "receipt is still pending")
+        self.assertEqual(record["confirmed_by"], {"type": "human", "id": ACTOR})
+        self.assertEqual(gate["override_reason"], "receipt is still pending")
+        self.assertIn("not rights-cleared", gate["note"])
+
     def test_published_master_survives_staging_cleanup_and_future_freeze(self) -> None:
         rights_ref = self.rights("confirmed")
         self.freeze([rights_ref])
@@ -1019,9 +1441,8 @@ class ReleaseTests(ProjectCase):
             asset_sha256=digest,
             confirmed=True,
         )
-        staging_file = self.root / "releases" / ".staging" / "rc001" / "master.wav"
-        staging_file.unlink()
-        staging_file.parent.rmdir()
+        self.assertFalse((self.root / "releases" / ".staging" / "rc001").exists())
+        self.assertTrue((self.root / "releases" / "rc001" / "master" / "master.wav").is_file())
         report = validate(self.root, "post")
         self.assertEqual(report["status"], "PASS", report)
         rc_path, gate = freeze_release(
@@ -1052,7 +1473,7 @@ class ReleaseTests(ProjectCase):
         self.assertNotIn(str(self.root), json.dumps(analysis))
 
     def test_incomplete_rights_need_structured_override(self) -> None:
-        with self.assertRaisesRegex(ValueError, "explicit override"):
+        with self.assertRaisesRegex(LedgerError, "override_reason"):
             self.freeze([])
         _, gate = self.freeze(
             [],
@@ -1071,7 +1492,8 @@ class ReleaseTests(ProjectCase):
         messages = "\n".join(issue["message"] for issue in report["errors"])
         self.assertEqual(report["status"], "FAIL")
         self.assertIn("metadata.toml", messages)
-        self.assertIn("frozen hash mismatch", messages)
+        self.assertIn("metadata.toml", messages)
+        self.assertIn("policy", messages)
 
     def test_release_validation_rejects_malformed_rights_refs(self) -> None:
         self.freeze([self.rights("confirmed")])
@@ -1088,7 +1510,7 @@ class ReleaseTests(ProjectCase):
 
     def test_known_unlicensed_is_not_overridable(self) -> None:
         evidence = self.rights("known_unlicensed")
-        with self.assertRaisesRegex(ValueError, "non-overridable"):
+        with self.assertRaisesRegex(LedgerError, "known_unlicensed"):
             self.freeze(
                 [evidence],
                 override_reason="attempted override",
@@ -1097,7 +1519,7 @@ class ReleaseTests(ProjectCase):
 
     def test_omitted_known_unlicensed_evidence_still_blocks_freeze(self) -> None:
         self.rights("known_unlicensed")
-        with self.assertRaisesRegex(ValueError, "non-overridable"):
+        with self.assertRaisesRegex(LedgerError, "known_unlicensed"):
             self.freeze(
                 [],
                 override_reason="attempted omission",
@@ -1106,7 +1528,7 @@ class ReleaseTests(ProjectCase):
 
     def test_listening_gate_must_identify_the_exact_master(self) -> None:
         wrong_review = self.approved_review(subject_sha256="f" * 64)
-        with self.assertRaisesRegex(ValueError, "not bound to the frozen master"):
+        with self.assertRaisesRegex(LedgerError, "not bound to the exact master"):
             freeze_release(
                 self.root,
                 track_id="track-one",
@@ -1198,7 +1620,7 @@ class ReleaseTests(ProjectCase):
                 "snapshot_kind": "source-reference",
             },
         )
-        with self.assertRaisesRegex(ValueError, "exact generation policy snapshot"):
+        with self.assertRaisesRegex(LedgerError, "exact generation policy snapshot"):
             freeze_release(
                 self.root,
                 track_id="track-one",
@@ -1214,13 +1636,12 @@ class ReleaseTests(ProjectCase):
                 confirmed=True,
             )
 
-    def test_existing_release_staging_is_never_overwritten_or_cleaned(self) -> None:
+    def test_unrelated_release_staging_is_preserved(self) -> None:
         staging = self.root / "releases" / ".staging" / "rc001"
         staging.mkdir(parents=True)
         marker = staging / "keep.txt"
         marker.write_text("keep\n", encoding="utf-8")
-        with self.assertRaisesRegex(FileExistsError, "staging area already exists"):
-            self.freeze([self.rights("confirmed")])
+        self.freeze([self.rights("confirmed")])
         self.assertEqual(marker.read_text(encoding="utf-8"), "keep\n")
 
     def test_release_gates_are_scoped_to_the_target_track(self) -> None:
@@ -1229,7 +1650,7 @@ class ReleaseTests(ProjectCase):
         self.approved_review("track-two")
         wrong_review = self.approved_review("track-two")
         wrong_rights = self.rights("confirmed", "track-two")
-        with self.assertRaisesRegex(ValueError, "missing or ambiguous"):
+        with self.assertRaisesRegex(LedgerError, "missing, ambiguous, or wrong type"):
             freeze_release(
                 self.root,
                 track_id="track-one",
@@ -1251,9 +1672,38 @@ class ReleaseTests(ProjectCase):
         staging = self.root / "releases" / ".staging"
         staging.parent.mkdir(exist_ok=True)
         staging.symlink_to(outside, target_is_directory=True)
-        with self.assertRaisesRegex(ValueError, "escapes repository"):
+        with self.assertRaisesRegex(LedgerError, "must not be a symlink"):
             self.freeze([self.rights("confirmed")])
         self.assertFalse((outside / "rc001" / self.master.name).exists())
+
+    def test_release_rejects_internal_submission_staging_symlink(self) -> None:
+        envelope = self.release_envelope([self.rights("confirmed")])
+        receipt = plan_event(self.root, envelope)
+        valuable = self.root / "reports" / "valuable"
+        valuable.mkdir(parents=True)
+        marker = valuable / "keep.txt"
+        marker.write_text("keep\n", encoding="utf-8")
+        staging = self.root / "releases/.staging" / str(envelope["submission_id"])
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        staging.symlink_to(valuable, target_is_directory=True)
+
+        with self.assertRaises(LedgerError) as caught:
+            apply_event(self.root, envelope, confirmed=True, plan_receipt=receipt)
+        self.assertEqual(caught.exception.code, "unsafe_staging")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep\n")
+
+    def test_release_preserves_unowned_submission_staging(self) -> None:
+        envelope = self.release_envelope([self.rights("confirmed")])
+        receipt = plan_event(self.root, envelope)
+        staging = self.root / "releases/.staging" / str(envelope["submission_id"])
+        staging.mkdir(parents=True)
+        marker = staging / "keep.txt"
+        marker.write_text("keep\n", encoding="utf-8")
+
+        with self.assertRaises(LedgerError) as caught:
+            apply_event(self.root, envelope, confirmed=True, plan_receipt=receipt)
+        self.assertEqual(caught.exception.code, "staging_conflict")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep\n")
 
     def test_freeze_rejects_tampered_or_nonhuman_gates(self) -> None:
         rights_ref = self.rights("confirmed")
@@ -1261,16 +1711,16 @@ class ReleaseTests(ProjectCase):
         review = load_toml(review_path)
         review["decision"] = "selected"
         atomic_write_toml(review_path, review)
-        with self.assertRaisesRegex(ValueError, "seal_mismatch"):
+        with self.assertRaisesRegex(LedgerError, "minimal validation"):
             self.freeze([rights_ref])
 
         review["decision"] = "approved"
         atomic_write_toml(review_path, seal_record(review))
         rights_path = self.root / "tracks" / "track-one" / "rights" / "re001.toml"
         rights = load_toml(rights_path)
-        rights["human_confirmed"] = False
+        rights["assessed_by"] = {"type": "agent", "id": "not-human"}
         atomic_write_toml(rights_path, seal_record(rights))
-        with self.assertRaisesRegex(ValueError, "not human-confirmed"):
+        with self.assertRaisesRegex(LedgerError, "assessed_by"):
             self.freeze([rights_ref])
 
 

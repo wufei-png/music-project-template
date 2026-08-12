@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import TEMPLATE_VERSION, TOOL_VERSION
+from . import SCHEMA_VERSION, TEMPLATE_VERSION, TOOL_VERSION
 from .analysis import analyze_audio
 from .assets import safe_import
 from .io import (
@@ -23,17 +23,18 @@ from .io import (
     sha256_file,
     validate_identifier,
 )
-from .records import (
-    new_track,
-    record_review,
-    record_rights,
-    register_edit,
-    register_export,
-    register_generation,
-    register_render,
-    seal_record,
+from .events import (
+    LedgerError,
+    apply_event,
+    load_envelope,
+    load_plan_receipt,
+    payload_from_key_values,
+    plan_event,
+    require_supported_schema,
 )
-from .release import freeze_release, record_publication
+from .locking import LedgerBusyError, LedgerLock
+from .records import new_track, seal_record
+from .release import record_publication
 from .retention import apply_plan, build_plan, plan_as_json
 from .validation import format_report, load_records, validate
 
@@ -53,6 +54,45 @@ def _actor(value: str) -> str:
 
 def _source_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _add_event_identity(
+    parser: argparse.ArgumentParser, responsibility: str = ""
+) -> None:
+    parser.add_argument("--submission-id", required=True)
+    parser.add_argument(
+        "--submitted-by-type", choices=("human", "agent", "automation"), required=True
+    )
+    parser.add_argument("--submitted-by-id", required=True)
+    if responsibility:
+        parser.add_argument(f"--{responsibility}-by-id", required=True)
+    parser.add_argument("--confirm", action="store_true")
+
+
+def _identity_from_args(args: argparse.Namespace) -> dict[str, str]:
+    return {"type": args.submitted_by_type, "id": args.submitted_by_id}
+
+
+def _event_from_args(
+    args: argparse.Namespace,
+    event_type: str,
+    payload: dict[str, Any],
+    responsibility: str = "",
+) -> dict[str, Any]:
+    envelope: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "event_type": event_type,
+        "submission_id": args.submission_id,
+        "submitted_by": _identity_from_args(args),
+        "track_id": args.track_id,
+        "payload": payload,
+    }
+    if responsibility:
+        envelope[f"{responsibility}_by"] = {
+            "type": "human",
+            "id": getattr(args, f"{responsibility}_by_id"),
+        }
+    return envelope
 
 
 def _effective_provider(root: Path, track_id: str, explicit: str) -> str:
@@ -128,7 +168,7 @@ def initialize_project(target: Path, project_id: str, title: str, actor: str) ->
     return target
 
 
-def _hash_text(root: Path, track_id: str, kind: str, item_id: str) -> Path:
+def _hash_text_unlocked(root: Path, track_id: str, kind: str, item_id: str) -> Path:
     directories = {"prompt": "prompts", "lyrics": "lyrics"}
     directory = directories[kind]
     validate_identifier(track_id, "track-id")
@@ -145,6 +185,22 @@ def _hash_text(root: Path, track_id: str, kind: str, item_id: str) -> Path:
     record["status"] = "sealed"
     atomic_write_toml(record_path, seal_record(record))
     return record_path
+
+
+def _hash_text(
+    root: Path,
+    track_id: str,
+    kind: str,
+    item_id: str,
+    *,
+    timeout: float = 5.0,
+) -> Path:
+    try:
+        with LedgerLock(root, timeout):
+            require_supported_schema(root)
+            return _hash_text_unlocked(root, track_id, kind, item_id)
+    except LedgerBusyError as exc:
+        raise LedgerError("ledger_busy", str(exc)) from exc
 
 
 def _status(root: Path) -> dict[str, Any]:
@@ -198,7 +254,21 @@ def _new_report_output(root: Path, raw_path: str, kind: str) -> Path:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="music.py")
     parser.add_argument("--root", default="", help="project root; defaults to discovery")
+    parser.add_argument(
+        "--lock-timeout",
+        type=float,
+        default=5.0,
+        help="seconds to wait for the local ledger lock (default: 5)",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    plan = subparsers.add_parser("plan-event", help="validate and preview one event envelope")
+    plan.add_argument("envelope")
+
+    apply = subparsers.add_parser("apply-event", help="apply one event envelope")
+    apply.add_argument("envelope")
+    apply.add_argument("--plan-receipt", default="")
+    apply.add_argument("--confirm", action="store_true")
 
     init_parser = subparsers.add_parser("init", help="copy a versioned template snapshot")
     init_parser.add_argument("target")
@@ -218,7 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     generation = subparsers.add_parser("register-generation")
     generation.add_argument("--track-id", required=True)
-    generation.add_argument("--actor", default="")
+    _add_event_identity(generation)
     generation.add_argument("--provider", default="", help="explicit provider override")
     generation.add_argument("--operation", default="create")
     generation.add_argument("--occurred-at", default="")
@@ -235,7 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     edit = subparsers.add_parser("register-edit")
     edit.add_argument("--track-id", required=True)
-    edit.add_argument("--actor", default="")
+    _add_event_identity(edit)
     edit.add_argument("--provider", default="", help="explicit provider override")
     edit.add_argument("--operation", required=True)
     edit.add_argument("--occurred-at", default="")
@@ -246,7 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     export = subparsers.add_parser("register-export")
     export.add_argument("--track-id", required=True)
-    export.add_argument("--actor", default="")
+    _add_event_identity(export)
     export.add_argument("--provider", default="", help="explicit provider override")
     export.add_argument("--operation", required=True)
     export.add_argument("--occurred-at", default="")
@@ -257,7 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     render = subparsers.add_parser("register-render")
     render.add_argument("--track-id", required=True)
-    render.add_argument("--actor", default="")
+    _add_event_identity(render)
     render.add_argument("--toolchain", required=True)
     render.add_argument("--parent-ref", action="append", required=True)
     render.add_argument("--input-ref", action="append", default=[])
@@ -266,7 +336,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     review = subparsers.add_parser("record-review")
     review.add_argument("--track-id", required=True)
-    review.add_argument("--actor", default="")
+    _add_event_identity(review, "reviewed")
     review.add_argument("--subject-ref", required=True)
     review.add_argument(
         "--subject-sha256",
@@ -279,11 +349,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     rights = subparsers.add_parser("record-rights")
     rights.add_argument("--track-id", required=True)
-    rights.add_argument("--actor", default="")
+    _add_event_identity(rights, "assessed")
     rights.add_argument("--subject-ref", required=True)
     rights.add_argument("--source-type", required=True)
     rights.add_argument("--human-status", required=True)
-    rights.add_argument("--private-locator", default="")
+    rights.add_argument("--evidence-ref", default="")
     rights.add_argument("--evidence-sha256", default="")
     rights.add_argument("--public-note", default="")
 
@@ -321,14 +391,13 @@ def build_parser() -> argparse.ArgumentParser:
     freeze.add_argument("--track-id", required=True)
     freeze.add_argument("--master", required=True)
     freeze.add_argument("--title", required=True)
-    freeze.add_argument("--actor", default="")
+    _add_event_identity(freeze, "confirmed")
     freeze.add_argument("--release-id", default="")
     freeze.add_argument("--listening-gate", action="append", required=True)
     freeze.add_argument("--rights-ref", action="append", default=[])
     freeze.add_argument("--policy-snapshot-ref", action="append", required=True)
     freeze.add_argument("--override-reason", default="")
-    freeze.add_argument("--override-risk", action="append", default=[])
-    freeze.add_argument("--confirm", action="store_true")
+    freeze.add_argument("--plan-receipt", required=True)
 
     publication = subparsers.add_parser("record-publication")
     publication.add_argument("--release-id", required=True)
@@ -355,101 +424,217 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(target)
             return 0
+        if args.command in {"plan-event", "apply-event"} and not args.root:
+            raise LedgerError(
+                "root_required", f"{args.command} requires an explicit --root"
+            )
         root = Path(args.root).expanduser().resolve() if args.root else find_root()
+        require_supported_schema(root)
 
-        if args.command == "new-track":
+        if args.command == "plan-event":
+            envelope_path = Path(args.envelope).expanduser().resolve(strict=True)
+            print(
+                json.dumps(
+                    plan_event(
+                        root,
+                        load_envelope(envelope_path),
+                        timeout=args.lock_timeout,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "apply-event":
+            envelope_path = Path(args.envelope).expanduser().resolve(strict=True)
+            receipt = (
+                load_plan_receipt(Path(args.plan_receipt).expanduser().resolve(strict=True))
+                if args.plan_receipt
+                else None
+            )
+            print(
+                json.dumps(
+                    apply_event(
+                        root,
+                        load_envelope(envelope_path),
+                        confirmed=args.confirm,
+                        plan_receipt=receipt,
+                        timeout=args.lock_timeout,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+        elif args.command == "new-track":
             print(new_track(root, args.track_id, args.title, _actor(args.actor)))
         elif args.command == "hash-text":
-            print(_hash_text(root, args.track_id, args.kind, args.id))
+            print(
+                _hash_text(
+                    root,
+                    args.track_id,
+                    args.kind,
+                    args.id,
+                    timeout=args.lock_timeout,
+                )
+            )
         elif args.command == "register-generation":
             print(
-                register_generation(
-                    root,
-                    track_id=args.track_id,
-                    actor=_actor(args.actor),
-                    provider=_effective_provider(root, args.track_id, args.provider),
-                    operation=args.operation,
-                    occurred_at=args.occurred_at,
-                    model=args.model,
-                    object_id=args.object_id,
-                    plan=args.plan,
-                    prompt_ref=args.prompt_ref,
-                    lyrics_ref=args.lyrics_ref,
-                    terms_snapshot_ref=args.terms_snapshot_ref,
-                    parent_refs=args.parent_ref,
-                    input_refs=args.input_ref,
-                    output_refs=args.output_ref,
-                    provider_data=args.provider_data,
+                json.dumps(
+                    apply_event(
+                        root,
+                        _event_from_args(
+                            args,
+                            "generation",
+                            {
+                                "provider": _effective_provider(root, args.track_id, args.provider),
+                                "operation": args.operation,
+                                "occurred_at": args.occurred_at,
+                                "model": args.model,
+                                "object_id": args.object_id,
+                                "plan": args.plan,
+                                "prompt_ref": args.prompt_ref,
+                                "lyrics_ref": args.lyrics_ref,
+                                "terms_snapshot_ref": args.terms_snapshot_ref,
+                                "parent_refs": args.parent_ref,
+                                "input_refs": args.input_ref,
+                                "output_refs": args.output_ref,
+                                "provider_data": payload_from_key_values(args.provider_data),
+                            },
+                        ),
+                        confirmed=args.confirm,
+                        timeout=args.lock_timeout,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
                 )
             )
         elif args.command == "register-edit":
             print(
-                register_edit(
-                    root,
-                    track_id=args.track_id,
-                    actor=_actor(args.actor),
-                    provider=_effective_provider(root, args.track_id, args.provider),
-                    operation=args.operation,
-                    occurred_at=args.occurred_at,
-                    parent_refs=args.parent_ref,
-                    input_refs=args.input_ref,
-                    output_refs=args.output_ref,
-                    provider_data=args.provider_data,
+                json.dumps(
+                    apply_event(
+                        root,
+                        _event_from_args(
+                            args,
+                            "edit",
+                            {
+                                "provider": _effective_provider(root, args.track_id, args.provider),
+                                "operation": args.operation,
+                                "occurred_at": args.occurred_at,
+                                "parent_refs": args.parent_ref,
+                                "input_refs": args.input_ref,
+                                "output_refs": args.output_ref,
+                                "provider_data": payload_from_key_values(args.provider_data),
+                            },
+                        ),
+                        confirmed=args.confirm,
+                        timeout=args.lock_timeout,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
                 )
             )
         elif args.command == "register-export":
             print(
-                register_export(
-                    root,
-                    track_id=args.track_id,
-                    actor=_actor(args.actor),
-                    provider=_effective_provider(root, args.track_id, args.provider),
-                    operation=args.operation,
-                    occurred_at=args.occurred_at,
-                    parent_refs=args.parent_ref,
-                    input_refs=args.input_ref,
-                    output_refs=args.output_ref,
-                    provider_data=args.provider_data,
+                json.dumps(
+                    apply_event(
+                        root,
+                        _event_from_args(
+                            args,
+                            "export",
+                            {
+                                "provider": _effective_provider(root, args.track_id, args.provider),
+                                "operation": args.operation,
+                                "occurred_at": args.occurred_at,
+                                "parent_refs": args.parent_ref,
+                                "input_refs": args.input_ref,
+                                "output_refs": args.output_ref,
+                                "provider_data": payload_from_key_values(args.provider_data),
+                            },
+                        ),
+                        confirmed=args.confirm,
+                        timeout=args.lock_timeout,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
                 )
             )
         elif args.command == "register-render":
             print(
-                register_render(
-                    root,
-                    track_id=args.track_id,
-                    actor=_actor(args.actor),
-                    toolchain=args.toolchain,
-                    parent_refs=args.parent_ref,
-                    input_refs=args.input_ref,
-                    output_refs=args.output_ref,
-                    notes=args.notes,
+                json.dumps(
+                    apply_event(
+                        root,
+                        _event_from_args(
+                            args,
+                            "render",
+                            {
+                                "toolchain": args.toolchain,
+                                "parent_refs": args.parent_ref,
+                                "input_refs": args.input_ref,
+                                "output_refs": args.output_ref,
+                                "notes": args.notes,
+                            },
+                        ),
+                        confirmed=args.confirm,
+                        timeout=args.lock_timeout,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
                 )
             )
         elif args.command == "record-review":
             print(
-                record_review(
-                    root,
-                    track_id=args.track_id,
-                    actor=_actor(args.actor),
-                    subject_ref=args.subject_ref,
-                    subject_sha256=args.subject_sha256,
-                    decision=args.decision,
-                    blind_label=args.blind_label,
-                    timestamp_notes=args.timestamp_notes,
+                json.dumps(
+                    apply_event(
+                        root,
+                        _event_from_args(
+                            args,
+                            "review",
+                            {
+                                "subject_ref": args.subject_ref,
+                                "subject_sha256": args.subject_sha256,
+                                "decision": args.decision,
+                                "blind_label": args.blind_label,
+                                "timestamp_notes": args.timestamp_notes,
+                            },
+                            "reviewed",
+                        ),
+                        confirmed=args.confirm,
+                        timeout=args.lock_timeout,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
                 )
             )
         elif args.command == "record-rights":
             print(
-                record_rights(
-                    root,
-                    track_id=args.track_id,
-                    actor=_actor(args.actor),
-                    subject_ref=args.subject_ref,
-                    source_type=args.source_type,
-                    human_status=args.human_status,
-                    private_locator=args.private_locator,
-                    evidence_sha256=args.evidence_sha256,
-                    public_note=args.public_note,
+                json.dumps(
+                    apply_event(
+                        root,
+                        _event_from_args(
+                            args,
+                            "rights_evidence",
+                            {
+                                "subject_ref": args.subject_ref,
+                                "source_type": args.source_type,
+                                "human_status": args.human_status,
+                                "evidence_ref": args.evidence_ref,
+                                "evidence_sha256": args.evidence_sha256,
+                                "public_note": args.public_note,
+                            },
+                            "assessed",
+                        ),
+                        confirmed=args.confirm,
+                        timeout=args.lock_timeout,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
                 )
             )
         elif args.command == "safe-import":
@@ -500,21 +685,35 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         elif args.command == "freeze-release":
-            path, status = freeze_release(
-                root,
-                track_id=args.track_id,
-                master=Path(args.master),
-                title=args.title,
-                actor=_actor(args.actor),
-                listening_gate_refs=args.listening_gate,
-                rights_refs=args.rights_ref,
-                policy_snapshot_refs=args.policy_snapshot_ref,
-                release_id=args.release_id,
-                override_reason=args.override_reason,
-                override_risks=args.override_risk,
-                confirmed=args.confirm,
+            print(
+                json.dumps(
+                    apply_event(
+                        root,
+                        _event_from_args(
+                            args,
+                            "release_candidate",
+                            {
+                                "master": args.master,
+                                "title": args.title,
+                                "release_id": args.release_id,
+                                "listening_gate_refs": args.listening_gate,
+                                "rights_refs": args.rights_ref,
+                                "policy_snapshot_refs": args.policy_snapshot_ref,
+                                "override_reason": args.override_reason,
+                            },
+                            "confirmed",
+                        ),
+                        confirmed=args.confirm,
+                        plan_receipt=load_plan_receipt(
+                            Path(args.plan_receipt).expanduser().resolve(strict=True)
+                        ),
+                        timeout=args.lock_timeout,
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                )
             )
-            print(f"{status} {path}")
         elif args.command == "record-publication":
             print(
                 record_publication(
@@ -529,11 +728,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         elif args.command == "migrate":
-            if args.to == "0.1":
-                print("schema 0.1 is current; no changes")
+            if args.to == SCHEMA_VERSION:
+                print(f"schema {SCHEMA_VERSION} is current; no changes")
             else:
-                raise ValueError("no migration path is implemented for the requested schema")
+                raise LedgerError(
+                    "migration_unsupported",
+                    "this release does not read or migrate other ledger schemas",
+                )
         return 0
+    except LedgerError as exc:
+        print(json.dumps(exc.as_dict(), ensure_ascii=False, sort_keys=True), file=sys.stderr)
+        return 2
     except (OSError, RuntimeError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        error = LedgerError("invalid_request", str(exc))
+        print(json.dumps(error.as_dict(), ensure_ascii=False, sort_keys=True), file=sys.stderr)
         return 2

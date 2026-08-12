@@ -1,9 +1,9 @@
-schema_version = "0.1"
+schema_version = "1.0"
 record_type = "lyrics"
 record_id = "lyrics:l001"
 created_at = "__CREATED_AT__"
 created_by = "__CREATED_BY__"
-created_with = "music-project-template 0.1.0"
+created_with = "music-project-template 0.2.0"
 status = "draft"
 
 track_ref = "track:__TRACK_ID__"

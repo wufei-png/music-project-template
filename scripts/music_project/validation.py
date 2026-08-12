@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import tomllib
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -29,6 +30,12 @@ RECORD_TYPES = {
     "publication",
 }
 EVENT_TYPES = {"generation", "edit", "export", "render"}
+EVIDENCE_EVENT_TYPES = {
+    *EVENT_TYPES,
+    "review",
+    "rights_evidence",
+    "release_candidate",
+}
 WORKFLOW_STATES = {
     "briefing",
     "generating",
@@ -153,7 +160,7 @@ def _resolve_ref(
 
 def _record_references(record: dict[str, Any]) -> Iterable[tuple[str, str]]:
     for key, value in record.items():
-        if key == "record_id" or key in PATH_REFERENCE_FIELDS:
+        if key in {"record_id", "evidence_ref"} or key in PATH_REFERENCE_FIELDS:
             continue
         values: list[str] = []
         if key.endswith("_ref") and isinstance(value, str):
@@ -408,15 +415,38 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                     )
                 )
 
+        if record_type in EVIDENCE_EVENT_TYPES:
+            submission_id = record.get("submission_id")
+            try:
+                normalized_submission_id = str(uuid.UUID(str(submission_id)))
+            except (ValueError, AttributeError):
+                normalized_submission_id = ""
+            if str(submission_id).lower() != normalized_submission_id:
+                issues.append(Issue("error", "submission_id", relative, "event submission_id must be a canonical UUID"))
+            if not re.fullmatch(r"[0-9a-f]{64}", str(record.get("envelope_digest") or "")):
+                issues.append(Issue("error", "envelope_digest", relative, "event envelope_digest is malformed"))
+            submitted_by = _table(record.get("submitted_by"))
+            if submitted_by.get("type") not in {"human", "agent", "automation"} or not submitted_by.get("id"):
+                issues.append(Issue("error", "submitted_by", relative, "event submitted_by is malformed"))
+            responsibility = {
+                "review": "reviewed_by",
+                "rights_evidence": "assessed_by",
+                "release_candidate": "confirmed_by",
+            }.get(str(record_type))
+            if responsibility:
+                responsible = _table(record.get(responsibility))
+                if responsible.get("type") != "human" or not responsible.get("id"):
+                    issues.append(Issue("error", responsibility, relative, f"{responsibility} must identify a human"))
+
         if record_type == "rights_evidence" and record.get("human_status") == "confirmed":
             evidence_hash = str(record.get("evidence_sha256") or "")
-            if not record.get("private_locator") or not re.fullmatch(r"[0-9a-f]{64}", evidence_hash):
+            if not record.get("evidence_ref") or not re.fullmatch(r"[0-9a-f]{64}", evidence_hash):
                 issues.append(
                     Issue(
                         "error",
                         "rights_evidence",
                         relative,
-                        "confirmed rights evidence requires an opaque locator and lowercase SHA-256",
+                        "confirmed rights evidence requires an opaque safe reference and lowercase SHA-256",
                     )
                 )
 
@@ -535,7 +565,7 @@ def validate(root: Path, level: str) -> dict[str, Any]:
         )
         covered = any(
             item.get("human_status") == "confirmed"
-            and item.get("human_confirmed")
+            and _table(item.get("assessed_by")).get("type") == "human"
             and item.get("status") == "sealed"
             and _table(item.get("seal")).get("content_sha256") == canonical_hash(item)
             for item in evidence
@@ -543,7 +573,7 @@ def validate(root: Path, level: str) -> dict[str, Any]:
         if not covered:
             issues.append(
                 Issue(
-                    "error",
+                    "warning",
                     "provider_rights",
                     path.relative_to(root).as_posix(),
                     "provider profile requires confirmed rights evidence for this event",
@@ -715,12 +745,16 @@ def _validate_releases(
         frozen = _table(record.get("frozen"))
         if not frozen.get("value"):
             issues.append(Issue("error", "release_not_frozen", relative, "release candidate is not frozen"))
-        master = _resolve_ref(str(record.get("master_ref") or ""), record, registry)
-        if not master or master[1].get("record_type") != "asset":
-            issues.append(Issue("error", "master_ref", relative, "master_ref must resolve to an asset"))
-        master_digest = (
-            str(master[1].get("sha256") or "").removeprefix("sha256:") if master else ""
-        )
+        master_digest = str(record.get("master_sha256") or "").removeprefix("sha256:")
+        master_path = str(record.get("master_path") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", master_digest):
+            issues.append(Issue("error", "master_identity", relative, "master_sha256 is malformed"))
+        else:
+            try:
+                if sha256_file(resolve_inside(Path(master_path), root, must_exist=True)) != master_digest:
+                    raise ValueError("master SHA-256 mismatch")
+            except (OSError, ValueError) as exc:
+                issues.append(Issue("error", "master_identity", relative, str(exc)))
         raw_review_refs = record.get("listening_gate_refs")
         review_refs = (
             raw_review_refs
@@ -740,7 +774,7 @@ def _validate_releases(
                 or review[1].get("status") != "sealed"
                 or _table(review[1].get("seal")).get("content_sha256") != canonical_hash(review[1])
                 or review[1].get("decision") not in {"approved", "selected"}
-                or not review[1].get("human_confirmed")
+                or _table(review[1].get("reviewed_by")).get("type") != "human"
                 or str(review[1].get("subject_sha256") or "").removeprefix("sha256:")
                 != master_digest
             ):
@@ -754,8 +788,11 @@ def _validate_releases(
         )
         if raw_rights_refs != rights_refs:
             issues.append(Issue("error", "rights_gate", relative, "rights_refs must be a list of strings"))
-        override = _table(record.get("human_override"))
-        override_valid = all(override.get(field) for field in ("reason", "actor", "timestamp", "unresolved_risks"))
+        override_valid = (
+            record.get("gate_status") == "PASS_WITH_OVERRIDE"
+            and bool(record.get("override_reason"))
+            and _table(record.get("confirmed_by")).get("type") == "human"
+        )
         if not rights_refs and not override_valid:
             issues.append(Issue("error", "rights_gate", relative, "missing rights evidence and no valid override"))
         track_blockers = [
@@ -781,7 +818,7 @@ def _validate_releases(
                 or evidence[1].get("record_type") != "rights_evidence"
                 or evidence[1].get("status") != "sealed"
                 or _table(evidence[1].get("seal")).get("content_sha256") != canonical_hash(evidence[1])
-                or not evidence[1].get("human_confirmed")
+                or _table(evidence[1].get("assessed_by")).get("type") != "human"
             ):
                 issues.append(Issue("error", "rights_gate", relative, f"invalid rights evidence: {reference}"))
                 continue
@@ -790,7 +827,7 @@ def _validate_releases(
                 issues.append(Issue("error", "known_unlicensed", relative, f"non-overridable rights blocker: {reference}"))
             elif human_status != "confirmed" and not override_valid:
                 issues.append(Issue("error", "rights_gate", relative, f"unconfirmed rights evidence: {reference}"))
-        raw_frozen_files = record.get("frozen_files")
+        raw_frozen_files = _table(record.get("output_binding")).get("files")
         frozen_files = raw_frozen_files if isinstance(raw_frozen_files, list) else []
         if raw_frozen_files != frozen_files:
             issues.append(Issue("error", "frozen_file", relative, "frozen_files must be a list of tables"))
@@ -817,6 +854,7 @@ def _validate_releases(
                 issues.append(Issue("error", "frozen_file", relative, f"frozen hash mismatch: {frozen_path}"))
 
         required_frozen = {
+            "master": str(record.get("master_path") or ""),
             "metadata": str(record.get("metadata_path") or ""),
             "gate": str(record.get("gate_path") or ""),
             "checksums": str(record.get("checksums_path") or ""),
@@ -826,13 +864,20 @@ def _validate_releases(
             paths = [str(item.get("path") or "") for item in frozen_by_kind.get(kind, [])]
             if paths != [expected_path]:
                 issues.append(Issue("error", "frozen_file", relative, f"missing or inconsistent frozen {kind}"))
-        policy_paths = [str(item.get("path") or "") for item in frozen_by_kind.get("policy_snapshot", [])]
+        raw_policy_snapshots = record.get("policy_snapshots")
+        policy_snapshots = raw_policy_snapshots if isinstance(raw_policy_snapshots, list) else []
+        if raw_policy_snapshots != policy_snapshots:
+            issues.append(Issue("error", "policy_snapshot", relative, "policy_snapshots must be a list of tables"))
+        policy_paths = [str(item.get("path") or "") for item in policy_snapshots if isinstance(item, dict)]
         raw_policy_refs = record.get("policy_snapshot_refs")
         policy_refs = raw_policy_refs if isinstance(raw_policy_refs, list) else []
         if policy_paths != policy_refs:
             issues.append(Issue("error", "policy_snapshot", relative, "frozen policy snapshots are inconsistent"))
         policy_providers: set[str] = set()
-        for item in frozen_by_kind.get("policy_snapshot", []):
+        for item in policy_snapshots:
+            if not isinstance(item, dict):
+                issues.append(Issue("error", "policy_snapshot", relative, "policy_snapshots must contain tables"))
+                continue
             provider = str(item.get("provider") or "")
             policy_path = str(item.get("path") or "")
             try:
@@ -847,6 +892,8 @@ def _validate_releases(
                     or not all(policy.get(field) for field in ("snapshot_id", "provider", "retrieved_at"))
                 ):
                     raise ValueError("policy snapshot identity is incomplete or mismatched")
+                if sha256_file(resolved_policy) != str(item.get("sha256") or ""):
+                    raise ValueError("policy snapshot SHA-256 mismatch")
                 policy_providers.add(provider)
             except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
                 issues.append(Issue("error", "policy_snapshot", relative, f"invalid policy snapshot: {exc}"))
@@ -870,7 +917,8 @@ def _validate_releases(
             )
         frozen_policy_identities = {
             (str(item.get("path") or ""), str(item.get("sha256") or ""))
-            for item in frozen_by_kind.get("policy_snapshot", [])
+            for item in policy_snapshots
+            if isinstance(item, dict)
         }
         required_generation_snapshots = {
             (
@@ -936,9 +984,12 @@ def _validate_releases(
             for field, expected_value in expected_gate_values.items():
                 if gate.get(field) != expected_value:
                     issues.append(Issue("error", "release_gate", relative, f"gate {field} does not match release candidate"))
-            expected_status = "PASS_WITH_OVERRIDE" if record.get("human_override") else "PASS"
+            expected_status = str(record.get("gate_status") or "")
             if gate.get("status") != expected_status:
                 issues.append(Issue("error", "release_gate", relative, "gate status does not match release candidate"))
+            if expected_status == "PASS_WITH_OVERRIDE":
+                if gate.get("override_reason") != record.get("override_reason"):
+                    issues.append(Issue("error", "release_gate", relative, "gate override_reason does not match release candidate"))
 
         checksums_path = str(record.get("checksums_path") or "")
         try:
@@ -958,10 +1009,9 @@ def _validate_releases(
             checksum_entries[parts[1]] = parts[0]
         if malformed_checksum:
             issues.append(Issue("error", "checksums", relative, "checksums file is malformed"))
-        elif master:
-            expected_digest = str(master[1].get("sha256") or "").removeprefix("sha256:")
-            expected_name = Path(str(record.get("staging_path") or "")).name
-            if checksum_entries.get(expected_name) != expected_digest:
+        else:
+            expected_name = f"master/{Path(master_path).name}"
+            if checksum_entries.get(expected_name) != master_digest:
                 issues.append(Issue("error", "checksums", relative, "master checksum entry is missing or incorrect"))
 
 
