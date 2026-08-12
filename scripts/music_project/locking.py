@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import time
 from pathlib import Path
@@ -14,8 +15,10 @@ class LedgerLock:
     """Exclusive OS advisory lock for one local filesystem ledger."""
 
     def __init__(self, root: Path, timeout: float = 5.0) -> None:
+        if not isinstance(timeout, (int, float)) or not math.isfinite(timeout):
+            raise ValueError("lock timeout must be finite and non-negative")
         if timeout < 0:
-            raise ValueError("lock timeout must be non-negative")
+            raise ValueError("lock timeout must be finite and non-negative")
         self.path = root / ".music-ledger.lock"
         self.timeout = timeout
         self._handle: BinaryIO | None = None

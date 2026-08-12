@@ -678,6 +678,23 @@ class EvidenceEventTests(ProjectCase):
         self.assertEqual(caught.exception.code, "ledger_busy")
         self.assertTrue((self.root / ".music-ledger.lock").is_file())
 
+    def test_lock_timeout_must_be_finite(self) -> None:
+        for timeout in (float("inf"), float("nan")):
+            with self.assertRaisesRegex(ValueError, "finite"):
+                LedgerLock(self.root, timeout=timeout)
+
+    def test_text_hash_writer_uses_the_ledger_lock(self) -> None:
+        with LedgerLock(self.root, timeout=0):
+            with self.assertRaises(LedgerError) as caught:
+                _hash_text(
+                    self.root,
+                    "track-one",
+                    "prompt",
+                    "p001",
+                    timeout=0,
+                )
+        self.assertEqual(caught.exception.code, "ledger_busy")
+
     def test_rights_evidence_rejects_private_locator_shapes(self) -> None:
         base = {
             "schema_version": "1.0",
@@ -1334,6 +1351,43 @@ class ReleaseTests(ProjectCase):
         self.assertEqual(caught.exception.code, "plan_stale")
         self.assertFalse((self.root / "releases/rc001").exists())
 
+    def test_release_plan_binds_referenced_prompt_and_lyrics_hashes(self) -> None:
+        register_generation(
+            self.root,
+            track_id="track-one",
+            actor=ACTOR,
+            provider="suno",
+            operation="create",
+            occurred_at="2026-08-10T10:00:00+08:00",
+            model="fixture-model",
+            object_id="text-binding",
+            plan="paid",
+            prompt_ref="prompt:p001",
+            lyrics_ref="lyrics:l001",
+            terms_snapshot_ref=self.policy_ref,
+            parent_refs=[],
+            input_refs=[],
+            output_refs=[],
+            provider_data=[],
+        )
+        envelope = self.release_envelope([self.rights("confirmed")])
+        receipt = plan_event(self.root, envelope)
+        state = receipt["plan"]["ledger_state"]
+        bound = {
+            item["record_id"]: item["text_sha256"]
+            for item in state
+            if item["record_type"] in {"prompt", "lyrics"}
+        }
+        self.assertEqual(set(bound), {"prompt:p001", "lyrics:l001"})
+
+        prompt = self.root / "tracks/track-one/prompts/p001.md"
+        prompt.write_text("changed after planning\n", encoding="utf-8")
+        _hash_text(self.root, "track-one", "prompt", "p001")
+        with self.assertRaises(LedgerError) as caught:
+            apply_event(self.root, envelope, confirmed=True, plan_receipt=receipt)
+        self.assertEqual(caught.exception.code, "plan_stale")
+        self.assertFalse((self.root / "releases/rc001").exists())
+
     def test_release_plan_receipt_rejects_content_tampering(self) -> None:
         envelope = self.release_envelope([self.rights("confirmed")])
         receipt = plan_event(self.root, envelope)
@@ -1618,9 +1672,38 @@ class ReleaseTests(ProjectCase):
         staging = self.root / "releases" / ".staging"
         staging.parent.mkdir(exist_ok=True)
         staging.symlink_to(outside, target_is_directory=True)
-        with self.assertRaisesRegex(ValueError, "escapes repository"):
+        with self.assertRaisesRegex(LedgerError, "must not be a symlink"):
             self.freeze([self.rights("confirmed")])
         self.assertFalse((outside / "rc001" / self.master.name).exists())
+
+    def test_release_rejects_internal_submission_staging_symlink(self) -> None:
+        envelope = self.release_envelope([self.rights("confirmed")])
+        receipt = plan_event(self.root, envelope)
+        valuable = self.root / "reports" / "valuable"
+        valuable.mkdir(parents=True)
+        marker = valuable / "keep.txt"
+        marker.write_text("keep\n", encoding="utf-8")
+        staging = self.root / "releases/.staging" / str(envelope["submission_id"])
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        staging.symlink_to(valuable, target_is_directory=True)
+
+        with self.assertRaises(LedgerError) as caught:
+            apply_event(self.root, envelope, confirmed=True, plan_receipt=receipt)
+        self.assertEqual(caught.exception.code, "unsafe_staging")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep\n")
+
+    def test_release_preserves_unowned_submission_staging(self) -> None:
+        envelope = self.release_envelope([self.rights("confirmed")])
+        receipt = plan_event(self.root, envelope)
+        staging = self.root / "releases/.staging" / str(envelope["submission_id"])
+        staging.mkdir(parents=True)
+        marker = staging / "keep.txt"
+        marker.write_text("keep\n", encoding="utf-8")
+
+        with self.assertRaises(LedgerError) as caught:
+            apply_event(self.root, envelope, confirmed=True, plan_receipt=receipt)
+        self.assertEqual(caught.exception.code, "staging_conflict")
+        self.assertEqual(marker.read_text(encoding="utf-8"), "keep\n")
 
     def test_freeze_rejects_tampered_or_nonhuman_gates(self) -> None:
         rights_ref = self.rights("confirmed")

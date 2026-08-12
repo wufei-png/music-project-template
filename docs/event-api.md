@@ -42,8 +42,9 @@ bind a record ID and returns no `plan_digest`; apply repeats full validation.
 For a `release_candidate`, planning is mandatory. The Release Plan Receipt
 binds the normalized envelope, resolved master identity, reviewed references,
 rights and policy snapshots, expected release ID and paths, and relevant ledger
-state. Apply validates the receipt digest and recomputes the plan while holding
-the ledger lock. Drift returns `plan_stale`; plan and confirm again.
+state. Referenced Prompt and Lyrics records are bound by their seals and exact
+text hashes. Apply validates the receipt digest and recomputes the plan while
+holding the ledger lock. Drift returns `plan_stale`; plan and confirm again.
 
 Both operations take the same per-ledger exclusive advisory lock. The default
 timeout is five seconds and may be changed with `--lock-timeout`; waiting is

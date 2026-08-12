@@ -5,6 +5,7 @@ import json
 import math
 import re
 import shutil
+import stat
 import uuid
 from io import StringIO
 from pathlib import Path
@@ -728,19 +729,50 @@ def _release_plan_core(root: Path, envelope: dict[str, Any], digest: str) -> dic
     release_dir = root / "releases" / release_id
     if release_dir.exists():
         raise LedgerError("release_exists", f"release candidate already exists: {release_id}")
-    state_items = sorted(
-        [
-            {
-                "record_id": str(record.get("record_id") or ""),
-                "seal": str((record.get("seal") or {}).get("content_sha256") or ""),
-            }
-            for _, record in _all_records(root)
-            if record.get("track_ref") == track_ref
-            and record.get("record_type")
-            in {"generation", "edit", "export", "render", "review", "rights_evidence"}
-        ],
-        key=lambda item: item["record_id"],
-    )
+    track_records = [
+        record
+        for _, record in _all_records(root)
+        if record.get("track_ref") == track_ref
+    ]
+    state_records = [
+        record
+        for record in track_records
+        if record.get("record_type")
+        in {"generation", "edit", "export", "render", "review", "rights_evidence"}
+    ]
+    text_refs = {
+        str(record.get(field) or "")
+        for record in state_records
+        if record.get("record_type") == "generation"
+        for field in ("prompt_ref", "lyrics_ref")
+        if record.get(field)
+    }
+    by_id = {
+        str(record.get("record_id") or ""): record
+        for record in track_records
+    }
+    for reference in sorted(text_refs):
+        prerequisite = by_id.get(reference)
+        if prerequisite is None or prerequisite.get("record_type") not in {
+            "prompt",
+            "lyrics",
+        }:
+            raise LedgerError(
+                "invalid_reference",
+                f"release prerequisite is missing or wrong type: {reference}",
+            )
+        state_records.append(prerequisite)
+    state_items = []
+    for record in state_records:
+        item = {
+            "record_type": str(record.get("record_type") or ""),
+            "record_id": str(record.get("record_id") or ""),
+            "seal": str((record.get("seal") or {}).get("content_sha256") or ""),
+        }
+        if record.get("record_type") in {"prompt", "lyrics"}:
+            item["text_sha256"] = str(record.get("sha256") or "")
+        state_items.append(item)
+    state_items.sort(key=lambda item: (item["record_type"], item["record_id"]))
     core = {
         "envelope": envelope,
         "envelope_digest": digest,
@@ -778,6 +810,61 @@ def _release_plan_receipt(root: Path, envelope: dict[str, Any], digest: str) -> 
         "planned_at": now_iso(),
         "plan": core,
     }
+
+
+def _reject_staging_symlink(path: Path) -> None:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(mode):
+        raise LedgerError(
+            "unsafe_staging", f"release staging path must not be a symlink: {path}"
+        )
+
+
+def _prepare_release_staging(root: Path, submission_id: str) -> tuple[Path, Path]:
+    releases = root.resolve() / "releases"
+    staging_root = releases / ".staging"
+    for component in (releases, staging_root):
+        _reject_staging_symlink(component)
+        if component.exists() and not component.is_dir():
+            raise LedgerError(
+                "unsafe_staging", f"release staging component is not a directory: {component}"
+            )
+    staging_root.mkdir(parents=True, exist_ok=True)
+    _reject_staging_symlink(staging_root)
+
+    staging = staging_root / submission_id
+    marker = staging / ".submission-id"
+    _reject_staging_symlink(staging)
+    if staging.exists():
+        if not staging.is_dir():
+            raise LedgerError(
+                "staging_conflict", "release submission staging is not a directory"
+            )
+        _reject_staging_symlink(marker)
+        try:
+            owner = marker.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise LedgerError(
+                "staging_conflict",
+                "release submission staging has no valid ownership marker",
+            ) from exc
+        if owner != submission_id:
+            raise LedgerError(
+                "staging_conflict",
+                "release submission staging belongs to a different submission",
+            )
+        shutil.rmtree(staging)
+
+    staging.mkdir()
+    try:
+        atomic_write_text(marker, submission_id + "\n")
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return staging, marker
 
 
 def plan_event(root: Path, raw_envelope: dict[str, Any], *, timeout: float = 5.0) -> dict[str, Any]:
@@ -836,9 +923,9 @@ def _apply_release(
     output = plan["expected_output"]
     release_id = output["release_id"]
     release_dir = root / output["release_directory"]
-    staging = resolve_inside(root / "releases" / ".staging" / envelope["submission_id"], root)
-    if staging.exists():
-        shutil.rmtree(staging)
+    staging, staging_marker = _prepare_release_staging(
+        root, str(envelope["submission_id"])
+    )
     bundle = staging / release_id
     bundle.mkdir(parents=True)
     try:
@@ -932,6 +1019,7 @@ def _apply_release(
     # The bundle rename above is the commit point. Cleanup must not turn an
     # already committed release into an apparent failure.
     try:
+        staging_marker.unlink()
         staging.rmdir()
     except OSError:
         pass

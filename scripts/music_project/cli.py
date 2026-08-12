@@ -32,6 +32,7 @@ from .events import (
     plan_event,
     require_supported_schema,
 )
+from .locking import LedgerBusyError, LedgerLock
 from .records import new_track, seal_record
 from .release import record_publication
 from .retention import apply_plan, build_plan, plan_as_json
@@ -167,7 +168,7 @@ def initialize_project(target: Path, project_id: str, title: str, actor: str) ->
     return target
 
 
-def _hash_text(root: Path, track_id: str, kind: str, item_id: str) -> Path:
+def _hash_text_unlocked(root: Path, track_id: str, kind: str, item_id: str) -> Path:
     directories = {"prompt": "prompts", "lyrics": "lyrics"}
     directory = directories[kind]
     validate_identifier(track_id, "track-id")
@@ -184,6 +185,22 @@ def _hash_text(root: Path, track_id: str, kind: str, item_id: str) -> Path:
     record["status"] = "sealed"
     atomic_write_toml(record_path, seal_record(record))
     return record_path
+
+
+def _hash_text(
+    root: Path,
+    track_id: str,
+    kind: str,
+    item_id: str,
+    *,
+    timeout: float = 5.0,
+) -> Path:
+    try:
+        with LedgerLock(root, timeout):
+            require_supported_schema(root)
+            return _hash_text_unlocked(root, track_id, kind, item_id)
+    except LedgerBusyError as exc:
+        raise LedgerError("ledger_busy", str(exc)) from exc
 
 
 def _status(root: Path) -> dict[str, Any]:
@@ -452,7 +469,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "new-track":
             print(new_track(root, args.track_id, args.title, _actor(args.actor)))
         elif args.command == "hash-text":
-            print(_hash_text(root, args.track_id, args.kind, args.id))
+            print(
+                _hash_text(
+                    root,
+                    args.track_id,
+                    args.kind,
+                    args.id,
+                    timeout=args.lock_timeout,
+                )
+            )
         elif args.command == "register-generation":
             print(
                 json.dumps(

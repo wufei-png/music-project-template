@@ -12,9 +12,62 @@
     "record_id": {"type": "string", "minLength": 1},
     "created_at": {"type": "string"},
     "created_by": {"type": "string"},
-    "submission_id": {"type": "string", "format": "uuid"},
+    "submission_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
     "envelope_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "submitted_by": {
+    "submitted_by": {"$ref": "#/$defs/submitter"},
+    "reviewed_by": {"$ref": "#/$defs/human"},
+    "assessed_by": {"$ref": "#/$defs/human"},
+    "confirmed_by": {"$ref": "#/$defs/human"},
+    "created_with": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "minLength": 1},
+    "parent_refs": {"type": "array", "items": {"type": "string"}},
+    "input_refs": {"type": "array", "items": {"type": "string"}},
+    "output_refs": {"type": "array", "items": {"type": "string"}},
+    "output_binding": {"type": "object"},
+    "seal": {
+      "type": "object",
+      "required": ["sealed", "content_sha256"],
+      "properties": {
+        "sealed": {"const": true},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["record_type"],
+        "properties": {
+          "record_type": {
+            "enum": ["generation", "edit", "export", "render", "review", "rights_evidence", "release_candidate"]
+          }
+        }
+      },
+      "then": {
+        "required": ["submission_id", "envelope_digest", "submitted_by", "output_binding", "seal"],
+        "properties": {"status": {"const": "sealed"}}
+      }
+    },
+    {
+      "if": {"required": ["record_type"], "properties": {"record_type": {"const": "review"}}},
+      "then": {"required": ["reviewed_by"]}
+    },
+    {
+      "if": {"required": ["record_type"], "properties": {"record_type": {"const": "rights_evidence"}}},
+      "then": {"required": ["assessed_by"]}
+    },
+    {
+      "if": {"required": ["record_type"], "properties": {"record_type": {"const": "release_candidate"}}},
+      "then": {"required": ["confirmed_by"]}
+    }
+  ],
+  "$defs": {
+    "submitter": {
       "type": "object",
       "required": ["type", "id"],
       "properties": {
@@ -23,11 +76,15 @@
       },
       "additionalProperties": false
     },
-    "created_with": {"type": "string", "minLength": 1},
-    "status": {"type": "string", "minLength": 1},
-    "parent_refs": {"type": "array", "items": {"type": "string"}},
-    "input_refs": {"type": "array", "items": {"type": "string"}},
-    "output_refs": {"type": "array", "items": {"type": "string"}}
+    "human": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": {"const": "human"},
+        "id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": true
 }
