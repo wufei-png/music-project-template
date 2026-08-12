@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/music-project-template/event-envelope.schema.json",
+  "title": "Music evidence event envelope",
+  "type": "object",
+  "required": ["schema_version", "event_type", "submission_id", "submitted_by", "track_id", "payload"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "event_type": {
+      "enum": ["generation", "edit", "export", "render", "review", "rights_evidence", "release_candidate"]
+    },
+    "submission_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "submitted_by": {"$ref": "#/$defs/submitter"},
+    "reviewed_by": {"$ref": "#/$defs/human"},
+    "assessed_by": {"$ref": "#/$defs/human"},
+    "confirmed_by": {"$ref": "#/$defs/human"},
+    "track_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "payload": {"type": "object"}
+  },
+  "oneOf": [
+    {
+      "not": {"anyOf": [{"required": ["reviewed_by"]}, {"required": ["assessed_by"]}, {"required": ["confirmed_by"]}]},
+      "properties": {
+        "event_type": {"const": "generation"},
+        "payload": {
+          "type": "object",
+          "required": ["provider", "operation", "model", "object_id", "prompt_ref"],
+          "properties": {
+            "provider": {"$ref": "#/$defs/text"},
+            "operation": {"$ref": "#/$defs/text"},
+            "occurred_at": {"type": "string"},
+            "model": {"$ref": "#/$defs/text"},
+            "object_id": {"$ref": "#/$defs/text"},
+            "plan": {"type": "string"},
+            "prompt_ref": {"$ref": "#/$defs/text"},
+            "lyrics_ref": {"type": "string"},
+            "terms_snapshot_ref": {"type": "string"},
+            "parent_refs": {"$ref": "#/$defs/refs"},
+            "input_refs": {"$ref": "#/$defs/refs"},
+            "output_refs": {"$ref": "#/$defs/refs"},
+            "provider_data": {"$ref": "#/$defs/provider_data"}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "not": {"anyOf": [{"required": ["reviewed_by"]}, {"required": ["assessed_by"]}, {"required": ["confirmed_by"]}]},
+      "properties": {
+        "event_type": {"const": "edit"},
+        "payload": {
+          "type": "object",
+          "required": ["provider", "operation", "parent_refs"],
+          "properties": {
+            "provider": {"$ref": "#/$defs/text"},
+            "operation": {"$ref": "#/$defs/text"},
+            "occurred_at": {"type": "string"},
+            "parent_refs": {"$ref": "#/$defs/nonempty_refs"},
+            "input_refs": {"$ref": "#/$defs/refs"},
+            "output_refs": {"$ref": "#/$defs/refs"},
+            "provider_data": {"$ref": "#/$defs/provider_data"}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "not": {"anyOf": [{"required": ["reviewed_by"]}, {"required": ["assessed_by"]}, {"required": ["confirmed_by"]}]},
+      "properties": {
+        "event_type": {"const": "export"},
+        "payload": {
+          "type": "object",
+          "required": ["provider", "operation", "parent_refs", "output_refs"],
+          "properties": {
+            "provider": {"$ref": "#/$defs/text"},
+            "operation": {"$ref": "#/$defs/text"},
+            "occurred_at": {"type": "string"},
+            "parent_refs": {"$ref": "#/$defs/nonempty_refs"},
+            "input_refs": {"$ref": "#/$defs/refs"},
+            "output_refs": {"$ref": "#/$defs/nonempty_refs"},
+            "provider_data": {"$ref": "#/$defs/provider_data"}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "not": {"anyOf": [{"required": ["reviewed_by"]}, {"required": ["assessed_by"]}, {"required": ["confirmed_by"]}]},
+      "properties": {
+        "event_type": {"const": "render"},
+        "payload": {
+          "type": "object",
+          "required": ["toolchain", "parent_refs"],
+          "properties": {
+            "toolchain": {"$ref": "#/$defs/text"},
+            "parent_refs": {"$ref": "#/$defs/nonempty_refs"},
+            "input_refs": {"$ref": "#/$defs/refs"},
+            "output_refs": {"$ref": "#/$defs/refs"},
+            "notes": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "required": ["reviewed_by"],
+      "not": {"anyOf": [{"required": ["assessed_by"]}, {"required": ["confirmed_by"]}]},
+      "properties": {
+        "event_type": {"const": "review"},
+        "payload": {
+          "type": "object",
+          "required": ["subject_ref", "decision"],
+          "properties": {
+            "subject_ref": {"$ref": "#/$defs/text"},
+            "subject_sha256": {"type": "string", "pattern": "^$|^(sha256:)?[0-9a-f]{64}$"},
+            "blind_label": {"type": "string"},
+            "decision": {"enum": ["relisten", "shortlist", "selected", "needs_work", "rejected", "approved"]},
+            "timestamp_notes": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "required": ["assessed_by"],
+      "not": {"anyOf": [{"required": ["reviewed_by"]}, {"required": ["confirmed_by"]}]},
+      "properties": {
+        "event_type": {"const": "rights_evidence"},
+        "payload": {
+          "type": "object",
+          "required": ["subject_ref", "source_type", "human_status"],
+          "properties": {
+            "subject_ref": {"$ref": "#/$defs/text"},
+            "source_type": {"$ref": "#/$defs/text"},
+            "human_status": {"enum": ["confirmed", "needs_review", "missing", "known_unlicensed"]},
+            "evidence_ref": {"type": "string"},
+            "evidence_sha256": {"type": "string", "pattern": "^$|^[0-9a-f]{64}$"},
+            "public_note": {"type": "string"}
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"human_status": {"const": "confirmed"}}},
+              "then": {
+                "required": ["evidence_ref", "evidence_sha256"],
+                "properties": {
+                  "evidence_ref": {"type": "string", "minLength": 1},
+                  "evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+                }
+              }
+            }
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "required": ["confirmed_by"],
+      "not": {"anyOf": [{"required": ["reviewed_by"]}, {"required": ["assessed_by"]}]},
+      "properties": {
+        "event_type": {"const": "release_candidate"},
+        "payload": {
+          "type": "object",
+          "required": ["master", "title", "listening_gate_refs", "policy_snapshot_refs"],
+          "properties": {
+            "master": {"$ref": "#/$defs/text"},
+            "title": {"$ref": "#/$defs/text"},
+            "release_id": {"type": "string", "pattern": "^$|^rc[0-9]{3,}$"},
+            "listening_gate_refs": {"$ref": "#/$defs/nonempty_refs"},
+            "rights_refs": {"$ref": "#/$defs/refs"},
+            "policy_snapshot_refs": {"$ref": "#/$defs/nonempty_refs"},
+            "override_reason": {"type": "string"}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "text": {"type": "string", "minLength": 1},
+    "provider_data": {
+      "type": "object",
+      "additionalProperties": {"type": ["string", "number", "integer", "boolean"]}
+    },
+    "refs": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+    "nonempty_refs": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/text"}},
+    "submitter": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": {"enum": ["human", "agent", "automation"]},
+        "id": {"$ref": "#/$defs/text"}
+      },
+      "additionalProperties": false
+    },
+    "human": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": {"const": "human"},
+        "id": {"$ref": "#/$defs/text"}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

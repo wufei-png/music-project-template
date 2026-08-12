@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from . import SCHEMA_VERSION
 from .io import atomic_write_json, load_config, now_iso, resolve_inside, sha256_file
 
 
@@ -44,7 +45,7 @@ def analyze_audio(root: Path, source: Path, output: Path) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise RuntimeError("ffprobe returned malformed JSON") from exc
     report = {
-        "schema_version": "0.1",
+        "schema_version": SCHEMA_VERSION,
         "analyzed_at": now_iso(),
         "source_sha256": sha256_file(source),
         "tool": "ffprobe",

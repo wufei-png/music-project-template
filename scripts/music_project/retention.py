@@ -126,7 +126,7 @@ def build_plan(root: Path, track_id: str | None = None) -> dict[str, Any]:
 def _archive_directory(locator: str, root: Path, track_id: str) -> Path:
     parsed = urlparse(locator)
     if parsed.scheme not in {"", "file"}:
-        raise ValueError("v0.1 external archive supports only paths and file:// locators")
+        raise ValueError("external archive supports only paths and file:// locators")
     raw_path = parsed.path if parsed.scheme == "file" else locator
     archive_path = Path(raw_path).expanduser()
     if not archive_path.is_absolute():
