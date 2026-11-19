@@ -4,3 +4,9 @@ assets/inputs/**     filter=lfs diff=lfs merge=lfs -text
 assets/selected/**   filter=lfs diff=lfs merge=lfs -text
 assets/stems/**      filter=lfs diff=lfs merge=lfs -text
 assets/milestones/** filter=lfs diff=lfs merge=lfs -text
+
+# Empty directory placeholders are ordinary Git files, not media assets.
+assets/inputs/**/.gitkeep     -filter -diff -merge text
+assets/selected/**/.gitkeep   -filter -diff -merge text
+assets/stems/**/.gitkeep      -filter -diff -merge text
+assets/milestones/**/.gitkeep -filter -diff -merge text
