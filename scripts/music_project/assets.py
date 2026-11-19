@@ -53,13 +53,18 @@ def create_asset_record(
     original_name: str = "",
     archived_locator: str = "",
 ) -> tuple[str, Path]:
-    if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
+    if len(sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in sha256
+    ):
         raise ValueError("asset SHA-256 must be 64 lowercase hexadecimal characters")
     asset_id = f"a-{sha256}"
     path = _asset_record_path(root, asset_id)
     if path.exists():
         existing = load_toml(path)
-        if existing.get("sha256") != sha256 or int(existing.get("size_bytes", -1)) != size_bytes:
+        if (
+            existing.get("sha256") != sha256
+            or int(existing.get("size_bytes", -1)) != size_bytes
+        ):
             raise RuntimeError(f"asset identity collision: {asset_id}")
     else:
         record = common_record("asset", asset_id, actor=actor)
@@ -129,7 +134,9 @@ def inspect_zip(path: Path, limits: dict[str, Any]) -> list[zipfile.ZipInfo]:
             if entry.compress_size:
                 ratio = entry.file_size / entry.compress_size
                 if ratio > float(limits["max_compression_ratio"]):
-                    raise ValueError(f"ZIP compression ratio is too high: {entry.filename}")
+                    raise ValueError(
+                        f"ZIP compression ratio is too high: {entry.filename}"
+                    )
         return entries
 
 
@@ -243,7 +250,10 @@ def safe_import(
                 member = _safe_member(entry)
                 extracted = temporary / Path(*member.parts)
                 extracted.parent.mkdir(parents=True, exist_ok=True)
-                with archive.open(entry) as source_handle, extracted.open("wb") as target_handle:
+                with (
+                    archive.open(entry) as source_handle,
+                    extracted.open("wb") as target_handle,
+                ):
                     shutil.copyfileobj(source_handle, target_handle)
                 imported.append(
                     _import_one(
