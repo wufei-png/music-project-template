@@ -11,7 +11,6 @@ from typing import Any, Iterable
 from . import SCHEMA_VERSION, TEMPLATE_VERSION, TOOL_VERSION
 from .io import canonical_hash, load_toml, resolve_inside, sha256_file
 
-
 RECORD_TYPES = {
     "portfolio",
     "track",
@@ -551,7 +550,7 @@ def validate(root: Path, level: str) -> dict[str, Any]:
             )
 
     graph: dict[str, list[str]] = {}
-    for path, record in records:
+    for _path, record in records:
         if record.get("record_type") not in EVENT_TYPES:
             continue
         node = _registry_key(record)

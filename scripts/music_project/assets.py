@@ -21,7 +21,6 @@ from .io import (
 )
 from .records import common_record, seal_record
 
-
 BUCKETS = {"inputs", "selected", "stems", "milestones"}
 STORAGES = {
     "git_lfs",

@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import tempfile
 import unittest
-import zipfile
-import os
-import json
-import subprocess
 import wave
+import zipfile
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.music_project.assets import create_asset_record, safe_import
-from scripts.music_project.cli import _hash_text, initialize_project, main as cli_main
+from scripts.music_project.cli import _hash_text, initialize_project
+from scripts.music_project.cli import main as cli_main
 from scripts.music_project.io import atomic_write_toml, load_toml, sha256_file
 from scripts.music_project.records import (
     _next_id,
@@ -27,7 +28,6 @@ from scripts.music_project.records import (
 from scripts.music_project.release import freeze_release, record_publication
 from scripts.music_project.retention import apply_plan, build_plan, effective_policy
 from scripts.music_project.validation import validate
-
 
 ACTOR = "fixture-user"
 

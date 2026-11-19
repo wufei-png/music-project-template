@@ -19,7 +19,6 @@ from .io import (
     validate_identifier,
 )
 
-
 VALID_MODES = {"metadata_only", "timed_local", "external_archive"}
 
 
