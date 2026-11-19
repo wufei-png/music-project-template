@@ -47,7 +47,9 @@ def seal_record(record: dict[str, Any]) -> dict[str, Any]:
 
 def seal_is_valid(record: dict[str, Any]) -> bool:
     seal = record.get("seal") or {}
-    return bool(seal.get("sealed")) and seal.get("content_sha256") == canonical_hash(record)
+    return bool(seal.get("sealed")) and seal.get("content_sha256") == canonical_hash(
+        record
+    )
 
 
 def _next_id(directory: Path, prefix: str, record_type: str) -> str:
@@ -289,7 +291,14 @@ def record_review(
     timestamp_notes: str,
     subject_sha256: str = "",
 ) -> Path:
-    allowed = {"relisten", "shortlist", "selected", "needs_work", "rejected", "approved"}
+    allowed = {
+        "relisten",
+        "shortlist",
+        "selected",
+        "needs_work",
+        "rejected",
+        "approved",
+    }
     if decision not in allowed:
         raise ValueError(f"decision must be one of: {', '.join(sorted(allowed))}")
     track = _track_directory(root, track_id)

@@ -63,7 +63,9 @@ def _effective_provider(root: Path, track_id: str, explicit: str) -> str:
     if isinstance(track_provider, str) and track_provider:
         return track_provider
     project = load_config(root).get("project")
-    if not isinstance(project, dict) or not isinstance(project.get("default_provider"), str):
+    if not isinstance(project, dict) or not isinstance(
+        project.get("default_provider"), str
+    ):
         raise ValueError("project.default_provider must be configured")
     provider = str(project["default_provider"])
     if not provider:
@@ -77,7 +79,8 @@ def _ignored_copy_path(relative: Path) -> bool:
         ".git" in parts
         or "__pycache__" in parts
         or parts[:2] == ("releases", ".staging")
-        or parts[:2] == ("assets", "candidates-local") and relative.name != ".gitkeep"
+        or parts[:2] == ("assets", "candidates-local")
+        and relative.name != ".gitkeep"
     )
 
 
@@ -85,7 +88,9 @@ def initialize_project(target: Path, project_id: str, title: str, actor: str) ->
     source = _source_root()
     target = target.expanduser().resolve()
     if target != source and source in target.parents:
-        raise ValueError("initialization target must not be nested inside the template source")
+        raise ValueError(
+            "initialization target must not be nested inside the template source"
+        )
     target.mkdir(parents=True, exist_ok=True)
     conflicts: list[str] = []
     files: list[tuple[Path, Path]] = []
@@ -95,7 +100,10 @@ def initialize_project(target: Path, project_id: str, title: str, actor: str) ->
             continue
         destination = target / relative
         files.append((source_path, destination))
-        if destination.exists() and destination.read_bytes() != source_path.read_bytes():
+        if (
+            destination.exists()
+            and destination.read_bytes() != source_path.read_bytes()
+        ):
             conflicts.append(relative.as_posix())
     if conflicts:
         raise FileExistsError(
@@ -197,10 +205,14 @@ def _new_report_output(root: Path, raw_path: str, kind: str) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="music.py")
-    parser.add_argument("--root", default="", help="project root; defaults to discovery")
+    parser.add_argument(
+        "--root", default="", help="project root; defaults to discovery"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    init_parser = subparsers.add_parser("init", help="copy a versioned template snapshot")
+    init_parser = subparsers.add_parser(
+        "init", help="copy a versioned template snapshot"
+    )
     init_parser.add_argument("target")
     init_parser.add_argument("--project-id", required=True)
     init_parser.add_argument("--title", required=True)
@@ -290,18 +302,24 @@ def build_parser() -> argparse.ArgumentParser:
     importer = subparsers.add_parser("safe-import")
     importer.add_argument("source")
     importer.add_argument("--track-id", required=True)
-    importer.add_argument("--bucket", choices=("inputs", "selected", "stems", "milestones"), required=True)
+    importer.add_argument(
+        "--bucket", choices=("inputs", "selected", "stems", "milestones"), required=True
+    )
     importer.add_argument("--role", required=True)
     importer.add_argument("--actor", default="")
 
     analyzer = subparsers.add_parser("analyze-audio")
     analyzer.add_argument("source")
     analyzer.add_argument(
-        "--output", required=True, help="new tracks/<track-id>/analysis/<name>.json path"
+        "--output",
+        required=True,
+        help="new tracks/<track-id>/analysis/<name>.json path",
     )
 
     validate_parser = subparsers.add_parser("validate")
-    validate_parser.add_argument("--level", choices=("minimal", "post", "release"), default="minimal")
+    validate_parser.add_argument(
+        "--level", choices=("minimal", "post", "release"), default="minimal"
+    )
     validate_parser.add_argument("--json", action="store_true")
 
     subparsers.add_parser("status")
@@ -471,10 +489,16 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2))
         elif args.command == "validate":
             report = validate(root, args.level)
-            print(json.dumps(report, ensure_ascii=False, indent=2) if args.json else format_report(report))
+            print(
+                json.dumps(report, ensure_ascii=False, indent=2)
+                if args.json
+                else format_report(report)
+            )
             return 0 if report["status"] == "PASS" else 1
         elif args.command == "status":
-            print(json.dumps(_status(root), ensure_ascii=False, indent=2, sort_keys=True))
+            print(
+                json.dumps(_status(root), ensure_ascii=False, indent=2, sort_keys=True)
+            )
         elif args.command == "retention-plan":
             plan = build_plan(root, args.track_id or None)
             if args.output:
@@ -484,7 +508,9 @@ def main(argv: list[str] | None = None) -> int:
             print(plan_as_json(plan))
         elif args.command == "retention-apply":
             if not args.confirm:
-                raise ValueError("retention-apply requires --confirm; run retention-plan first")
+                raise ValueError(
+                    "retention-apply requires --confirm; run retention-plan first"
+                )
             plan_path = Path(args.plan)
             if not plan_path.is_absolute():
                 plan_path = root / plan_path
@@ -492,9 +518,7 @@ def main(argv: list[str] | None = None) -> int:
             plan = json.loads(plan_path.read_text(encoding="utf-8"))
             print(
                 json.dumps(
-                    apply_plan(
-                        root, plan, _actor(args.actor), confirmed=args.confirm
-                    ),
+                    apply_plan(root, plan, _actor(args.actor), confirmed=args.confirm),
                     ensure_ascii=False,
                     indent=2,
                 )
@@ -532,7 +556,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.to == "0.1":
                 print("schema 0.1 is current; no changes")
             else:
-                raise ValueError("no migration path is implemented for the requested schema")
+                raise ValueError(
+                    "no migration path is implemented for the requested schema"
+                )
         return 0
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

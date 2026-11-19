@@ -19,7 +19,6 @@ from .io import (
     validate_identifier,
 )
 
-
 VALID_MODES = {"metadata_only", "timed_local", "external_archive"}
 
 
@@ -36,7 +35,9 @@ def effective_policy(root: Path, track_id: str) -> dict[str, Any]:
                 project[key] = override[key]
     mode = project.get("mode")
     if mode not in VALID_MODES:
-        raise ValueError(f"candidate retention mode must be one of: {', '.join(sorted(VALID_MODES))}")
+        raise ValueError(
+            f"candidate retention mode must be one of: {', '.join(sorted(VALID_MODES))}"
+        )
     if mode == "timed_local" and int(project.get("days", -1)) < 0:
         raise ValueError("timed_local retention requires non-negative days")
     if mode == "external_archive" and not project.get("archive_locator"):
@@ -60,7 +61,9 @@ def _reserve_archive_target(
     reserved_targets: dict[Path, str],
 ) -> Path:
     target = (archive_dir / name).resolve()
-    existing_digest = sha256_file(target) if target.exists() else reserved_targets.get(target)
+    existing_digest = (
+        sha256_file(target) if target.exists() else reserved_targets.get(target)
+    )
     if existing_digest is not None and existing_digest != digest:
         target = (archive_dir / f"{digest}-{name}").resolve()
     if target.exists() and sha256_file(target) != digest:
@@ -74,9 +77,13 @@ def _reserve_archive_target(
 
 def build_plan(root: Path, track_id: str | None = None) -> dict[str, Any]:
     base = root / "assets" / "candidates-local"
-    track_ids = [track_id] if track_id else sorted(
-        path.name for path in base.iterdir() if path.is_dir()
-    ) if base.exists() else []
+    track_ids = (
+        [track_id]
+        if track_id
+        else sorted(path.name for path in base.iterdir() if path.is_dir())
+        if base.exists()
+        else []
+    )
     now = datetime.now().astimezone()
     entries: list[dict[str, Any]] = []
     reserved_targets: dict[Path, str] = {}
@@ -126,7 +133,9 @@ def build_plan(root: Path, track_id: str | None = None) -> dict[str, Any]:
 def _archive_directory(locator: str, root: Path, track_id: str) -> Path:
     parsed = urlparse(locator)
     if parsed.scheme not in {"", "file"}:
-        raise ValueError("v0.1 external archive supports only paths and file:// locators")
+        raise ValueError(
+            "v0.1 external archive supports only paths and file:// locators"
+        )
     raw_path = parsed.path if parsed.scheme == "file" else locator
     archive_path = Path(raw_path).expanduser()
     if not archive_path.is_absolute():
@@ -171,7 +180,9 @@ def apply_plan(
             raise RuntimeError(f"candidate changed after planning: {entry['path']}")
         policy = _normalized_policy(root, track_id)
         if entry.get("policy") != policy:
-            raise ValueError(f"retention policy changed after planning: {entry['path']}")
+            raise ValueError(
+                f"retention policy changed after planning: {entry['path']}"
+            )
         modified = datetime.fromtimestamp(path.stat().st_mtime).astimezone()
         age_days = (datetime.now().astimezone() - modified).total_seconds() / 86400
         if policy["mode"] == "timed_local" and age_days < int(policy["days"]):
@@ -192,9 +203,13 @@ def apply_plan(
                 archive_dir, path.name, digest, reserved_targets
             )
             if target == path:
-                raise ValueError(f"archive target equals candidate source: {entry['path']}")
+                raise ValueError(
+                    f"archive target equals candidate source: {entry['path']}"
+                )
             if str(target) != str(entry.get("archive_target") or ""):
-                raise ValueError(f"archive target changed after planning: {entry['path']}")
+                raise ValueError(
+                    f"archive target changed after planning: {entry['path']}"
+                )
         preflighted.append(
             {
                 "entry": entry,
@@ -226,7 +241,9 @@ def apply_plan(
             os.replace(path, quarantine)
             prepared["quarantine"] = quarantine
             if sha256_file(quarantine) != digest:
-                raise RuntimeError(f"candidate changed after preflight: {entry['path']}")
+                raise RuntimeError(
+                    f"candidate changed after preflight: {entry['path']}"
+                )
 
         # Complete all archives before writing any canonical records.
         for prepared in preflighted:
@@ -283,7 +300,11 @@ def apply_plan(
         for prepared in reversed(preflighted):
             quarantine = prepared.get("quarantine")
             original = prepared["path"]
-            if isinstance(quarantine, Path) and quarantine.exists() and not original.exists():
+            if (
+                isinstance(quarantine, Path)
+                and quarantine.exists()
+                and not original.exists()
+            ):
                 original.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(quarantine, original)
         shutil.rmtree(quarantine_root, ignore_errors=True)

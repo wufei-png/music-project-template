@@ -33,14 +33,31 @@ def _require_validation(root: Path, level: str) -> None:
     raise ValueError(f"{level} validation failed before publication: {codes}")
 
 
-def _github_publication_parts(url: str, expected_kind: str) -> tuple[str, str, str, str]:
+def _github_publication_parts(
+    url: str, expected_kind: str
+) -> tuple[str, str, str, str]:
     parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.query or parsed.fragment:
-        raise ValueError("authoritative publication URLs must be canonical GitHub HTTPS URLs")
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "github.com"
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "authoritative publication URLs must be canonical GitHub HTTPS URLs"
+        )
     parts = [unquote(part) for part in parsed.path.split("/") if part]
-    if expected_kind == "release" and len(parts) == 5 and parts[2:4] == ["releases", "tag"]:
+    if (
+        expected_kind == "release"
+        and len(parts) == 5
+        and parts[2:4] == ["releases", "tag"]
+    ):
         return parts[0], parts[1], parts[4], ""
-    if expected_kind == "asset" and len(parts) == 6 and parts[2:4] == ["releases", "download"]:
+    if (
+        expected_kind == "asset"
+        and len(parts) == 6
+        and parts[2:4] == ["releases", "download"]
+    ):
         return parts[0], parts[1], parts[4], parts[5]
     raise ValueError(f"invalid GitHub {expected_kind} URL structure")
 
@@ -71,7 +88,12 @@ def _unique_record(
     matches = (
         index.get((scope, reference), [])
         if scope is not None
-        else [record for (_, record_id), records in index.items() if record_id == reference for record in records]
+        else [
+            record
+            for (_, record_id), records in index.items()
+            if record_id == reference
+            for record in records
+        ]
     )
     if len(matches) != 1:
         raise ValueError(f"reference is missing or ambiguous: {reference}")
@@ -147,17 +169,25 @@ def freeze_release(
         if not snapshot.is_file():
             raise ValueError(f"policy snapshot reference is not a file: {reference}")
         snapshot_relative = snapshot.relative_to(root.resolve()).parts
-        if len(snapshot_relative) < 4 or snapshot_relative[:2] != ("policies", "platforms"):
-            raise ValueError(f"policy snapshot is outside policies/platforms: {reference}")
+        if len(snapshot_relative) < 4 or snapshot_relative[:2] != (
+            "policies",
+            "platforms",
+        ):
+            raise ValueError(
+                f"policy snapshot is outside policies/platforms: {reference}"
+            )
         try:
             snapshot_record = load_toml(snapshot)
         except (OSError, tomllib.TOMLDecodeError) as exc:
             raise ValueError(f"invalid policy snapshot TOML: {reference}") from exc
         provider = str(snapshot_record.get("provider") or "")
         if snapshot_relative[2] != provider or not all(
-            snapshot_record.get(field) for field in ("snapshot_id", "provider", "retrieved_at")
+            snapshot_record.get(field)
+            for field in ("snapshot_id", "provider", "retrieved_at")
         ):
-            raise ValueError(f"policy snapshot identity is incomplete or mismatched: {reference}")
+            raise ValueError(
+                f"policy snapshot identity is incomplete or mismatched: {reference}"
+            )
         frozen_policy_snapshots.append(
             {
                 "kind": "policy_snapshot",
@@ -196,7 +226,8 @@ def freeze_release(
     missing_providers = sorted(event_providers - frozen_providers)
     if missing_providers:
         raise ValueError(
-            "missing policy snapshot for track provider: " + ", ".join(missing_providers)
+            "missing policy snapshot for track provider: "
+            + ", ".join(missing_providers)
         )
     frozen_policy_identities = {
         (item["path"], item["sha256"]) for item in frozen_policy_snapshots
@@ -207,8 +238,7 @@ def freeze_release(
             str(item.get("terms_snapshot_sha256") or ""),
         )
         for item in track_records
-        if item.get("record_type") == "generation"
-        and item.get("terms_snapshot_ref")
+        if item.get("record_type") == "generation" and item.get("terms_snapshot_ref")
     }
     missing_generation_snapshots = sorted(
         required_generation_snapshots - frozen_policy_identities
@@ -222,10 +252,16 @@ def freeze_release(
         review = _unique_record(index, reference, scope=track_ref)
         if review.get("status") != "sealed" or not seal_is_valid(review):
             raise ValueError(f"listening gate has an invalid seal: {reference}")
-        if review.get("record_type") != "review" or review.get("decision") not in {"approved", "selected"} or not review.get("human_confirmed"):
+        if (
+            review.get("record_type") != "review"
+            or review.get("decision") not in {"approved", "selected"}
+            or not review.get("human_confirmed")
+        ):
             raise ValueError(f"invalid listening gate: {reference}")
         if str(review.get("subject_sha256") or "").removeprefix("sha256:") != digest:
-            raise ValueError(f"listening gate is not bound to the frozen master: {reference}")
+            raise ValueError(
+                f"listening gate is not bound to the frozen master: {reference}"
+            )
 
     unresolved: list[str] = []
     for reference in rights_refs:
@@ -238,10 +274,14 @@ def freeze_release(
             raise ValueError(f"rights evidence is not human-confirmed: {reference}")
         status = evidence.get("human_status")
         if status == "known_unlicensed":
-            raise ValueError(f"known_unlicensed is a non-overridable blocker: {reference}")
+            raise ValueError(
+                f"known_unlicensed is a non-overridable blocker: {reference}"
+            )
         if status == "confirmed" and (
             not evidence.get("private_locator")
-            or not re.fullmatch(r"[0-9a-f]{64}", str(evidence.get("evidence_sha256") or ""))
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", str(evidence.get("evidence_sha256") or "")
+            )
         ):
             raise ValueError(f"confirmed rights evidence is incomplete: {reference}")
         if status != "confirmed":
@@ -308,10 +348,26 @@ def freeze_release(
         atomic_write_toml(gate_path, gate)
 
         frozen_files = [
-            {"kind": "metadata", "path": relative_path(metadata_path, root), "sha256": sha256_file(metadata_path)},
-            {"kind": "gate", "path": relative_path(gate_path, root), "sha256": sha256_file(gate_path)},
-            {"kind": "checksums", "path": relative_path(checksums_path, root), "sha256": sha256_file(checksums_path)},
-            {"kind": "analysis", "path": relative_path(analysis_path, root), "sha256": sha256_file(analysis_path)},
+            {
+                "kind": "metadata",
+                "path": relative_path(metadata_path, root),
+                "sha256": sha256_file(metadata_path),
+            },
+            {
+                "kind": "gate",
+                "path": relative_path(gate_path, root),
+                "sha256": sha256_file(gate_path),
+            },
+            {
+                "kind": "checksums",
+                "path": relative_path(checksums_path, root),
+                "sha256": sha256_file(checksums_path),
+            },
+            {
+                "kind": "analysis",
+                "path": relative_path(analysis_path, root),
+                "sha256": sha256_file(analysis_path),
+            },
             *frozen_policy_snapshots,
         ]
 
@@ -331,7 +387,12 @@ def freeze_release(
                 "frozen_files": frozen_files,
                 "publication_target": "github_release",
                 "publication_status": "prepared",
-                "frozen": {"value": True, "by": actor, "at": now_iso(), "git_commit": ""},
+                "frozen": {
+                    "value": True,
+                    "by": actor,
+                    "at": now_iso(),
+                    "git_commit": "",
+                },
             }
         )
         if unresolved:
@@ -386,12 +447,24 @@ def record_publication(
     expected = str(master.get("sha256") or "").removeprefix("sha256:")
     if asset_sha256.removeprefix("sha256:") != expected:
         raise ValueError("published asset SHA-256 does not match the frozen master")
-    metadata = load_toml(resolve_inside(Path(str(rc.get("metadata_path") or "")), root, must_exist=True))
+    metadata = load_toml(
+        resolve_inside(Path(str(rc.get("metadata_path") or "")), root, must_exist=True)
+    )
     expected_tag = str(metadata.get("github_tag") or "")
-    release_owner, release_repo, release_tag, _ = _github_publication_parts(release_url, "release")
-    asset_owner, asset_repo, asset_tag, url_asset_name = _github_publication_parts(asset_url, "asset")
-    if (release_owner, release_repo, release_tag) != (asset_owner, asset_repo, asset_tag):
-        raise ValueError("release and asset URLs must identify the same repository and tag")
+    release_owner, release_repo, release_tag, _ = _github_publication_parts(
+        release_url, "release"
+    )
+    asset_owner, asset_repo, asset_tag, url_asset_name = _github_publication_parts(
+        asset_url, "asset"
+    )
+    if (release_owner, release_repo, release_tag) != (
+        asset_owner,
+        asset_repo,
+        asset_tag,
+    ):
+        raise ValueError(
+            "release and asset URLs must identify the same repository and tag"
+        )
     if release_tag != expected_tag:
         raise ValueError("publication URL tag does not match frozen metadata")
     if url_asset_name != asset_name or Path(asset_name).name != asset_name:

@@ -1,19 +1,20 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import tempfile
 import unittest
-import zipfile
-import os
-import json
-import subprocess
 import wave
+import zipfile
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.music_project.assets import create_asset_record, safe_import
-from scripts.music_project.cli import _hash_text, initialize_project, main as cli_main
+from scripts.music_project.cli import _hash_text, initialize_project
+from scripts.music_project.cli import main as cli_main
 from scripts.music_project.io import atomic_write_toml, load_toml, sha256_file
 from scripts.music_project.records import (
     _next_id,
@@ -27,7 +28,6 @@ from scripts.music_project.records import (
 from scripts.music_project.release import freeze_release, record_publication
 from scripts.music_project.retention import apply_plan, build_plan, effective_policy
 from scripts.music_project.validation import validate
-
 
 ACTOR = "fixture-user"
 
@@ -85,7 +85,9 @@ class InitializationTests(ProjectCase):
         self.new_track("second")
         report = validate(self.root, "minimal")
         self.assertEqual(report["status"], "PASS", report)
-        self.assertEqual(load_toml(self.root / "music.toml")["project"]["project_id"], "fixture")
+        self.assertEqual(
+            load_toml(self.root / "music.toml")["project"]["project_id"], "fixture"
+        )
 
     def test_initializer_preserves_unrelated_existing_file(self) -> None:
         target = self.base / "existing"
@@ -277,7 +279,9 @@ class RecordValidationTests(ProjectCase):
                 ]
             )
         self.assertEqual(result, 0)
-        event = load_toml(self.root / "tracks" / "track-one" / "generations" / "g001.toml")
+        event = load_toml(
+            self.root / "tracks" / "track-one" / "generations" / "g001.toml"
+        )
         self.assertEqual(event["provider"], "example-provider")
 
     def test_immutable_event_cannot_drop_its_seal(self) -> None:
@@ -331,7 +335,9 @@ class RecordValidationTests(ProjectCase):
         )
         self.assertTrue(load_toml(path)["terms_snapshot_sha256"])
         policy = self.root / "policies" / "platforms" / "suno" / "2026-08-10.toml"
-        policy.write_text(policy.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+        policy.write_text(
+            policy.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8"
+        )
         report = validate(self.root, "minimal")
         self.assertIn("terms_snapshot", {issue["code"] for issue in report["errors"]})
 
@@ -513,7 +519,9 @@ class ImportTests(ProjectCase):
             len(list((self.root / "assets" / "records").glob("a-*.toml"))), 1
         )
         self.assertEqual(
-            len(list((self.root / "assets" / "records" / "locations").glob("al-*.toml"))),
+            len(
+                list((self.root / "assets" / "records" / "locations").glob("al-*.toml"))
+            ),
             2,
         )
         report = validate(self.root, "post")
@@ -798,7 +806,9 @@ class RetentionTests(ProjectCase):
             "archive_locator": str(self.base / "archive-a"),
         }
         atomic_write_toml(config_path, config)
-        candidate = self.root / "assets" / "candidates-local" / "track-one" / "candidate.wav"
+        candidate = (
+            self.root / "assets" / "candidates-local" / "track-one" / "candidate.wav"
+        )
         candidate.parent.mkdir(parents=True)
         candidate.write_bytes(b"candidate")
         plan = build_plan(self.root, "track-one")
@@ -824,7 +834,9 @@ class RetentionTests(ProjectCase):
             "archive_locator": "../relative-cold",
         }
         atomic_write_toml(config_path, config)
-        candidate = self.root / "assets" / "candidates-local" / "track-one" / "candidate.wav"
+        candidate = (
+            self.root / "assets" / "candidates-local" / "track-one" / "candidate.wav"
+        )
         candidate.parent.mkdir(parents=True)
         candidate.write_bytes(b"candidate")
         plan = build_plan(self.root, "track-one")
@@ -840,7 +852,9 @@ class RetentionTests(ProjectCase):
         config = load_toml(config_path)
         config["candidate_retention"]["days"] = 0
         atomic_write_toml(config_path, config)
-        candidate = self.root / "assets" / "candidates-local" / "track-one" / "candidate.wav"
+        candidate = (
+            self.root / "assets" / "candidates-local" / "track-one" / "candidate.wav"
+        )
         candidate.parent.mkdir(parents=True)
         candidate.write_bytes(b"planned")
         plan = build_plan(self.root, "track-one")
@@ -852,7 +866,9 @@ class RetentionTests(ProjectCase):
             if "retention-" in destination_path.as_posix():
                 destination_path.write_bytes(b"changed-during-apply")
 
-        with patch("scripts.music_project.retention.os.replace", side_effect=tampering_replace):
+        with patch(
+            "scripts.music_project.retention.os.replace", side_effect=tampering_replace
+        ):
             with self.assertRaisesRegex(RuntimeError, "changed after preflight"):
                 apply_plan(self.root, plan, ACTOR, confirmed=True)
         self.assertTrue(candidate.exists())
@@ -948,9 +964,7 @@ class ReleaseTests(ProjectCase):
             output.setsampwidth(2)
             output.setframerate(44100)
             output.writeframes(b"\0\0" * 4410)
-        self.review_ref = self.approved_review(
-            subject_sha256=sha256_file(self.master)
-        )
+        self.review_ref = self.approved_review(subject_sha256=sha256_file(self.master))
         self.policy_ref = "policies/platforms/suno/2026-08-10.toml"
 
     def freeze(self, rights_refs: list[str], **overrides: object) -> tuple[Path, str]:
@@ -1066,7 +1080,9 @@ class ReleaseTests(ProjectCase):
         metadata = self.root / "releases" / "rc001" / "metadata.toml"
         metadata.unlink()
         policy = self.root / self.policy_ref
-        policy.write_text(policy.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")
+        policy.write_text(
+            policy.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8"
+        )
         report = validate(self.root, "release")
         messages = "\n".join(issue["message"] for issue in report["errors"])
         self.assertEqual(report["status"], "FAIL")

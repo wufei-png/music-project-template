@@ -104,8 +104,10 @@ def toml_dumps(value: dict[str, Any]) -> str:
         for key, item in table.items():
             if isinstance(item, dict):
                 child_tables.append((key, item))
-            elif isinstance(item, list) and item and all(
-                isinstance(entry, dict) for entry in item
+            elif (
+                isinstance(item, list)
+                and item
+                and all(isinstance(entry, dict) for entry in item)
             ):
                 array_tables.append((key, item))
             else:

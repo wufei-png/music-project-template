@@ -11,7 +11,6 @@ from typing import Any, Iterable
 from . import SCHEMA_VERSION, TEMPLATE_VERSION, TOOL_VERSION
 from .io import canonical_hash, load_toml, resolve_inside, sha256_file
 
-
 RECORD_TYPES = {
     "portfolio",
     "track",
@@ -137,7 +136,9 @@ def _registry_key(record: dict[str, Any]) -> str:
 
 
 def _resolve_ref(
-    reference: str, record: dict[str, Any], registry: dict[str, tuple[Path, dict[str, Any]]]
+    reference: str,
+    record: dict[str, Any],
+    registry: dict[str, tuple[Path, dict[str, Any]]],
 ) -> tuple[Path, dict[str, Any]] | None:
     local_key = f"{_scope(record)}|{reference}"
     if local_key in registry:
@@ -265,30 +266,76 @@ def _validate_config(root: Path) -> tuple[dict[str, Any], list[Issue]]:
     for field, code in tables.items():
         value = config.get(field)
         if not isinstance(value, dict):
-            issues.append(Issue("error", code, "music.toml", f"{field} must be a TOML table"))
+            issues.append(
+                Issue("error", code, "music.toml", f"{field} must be a TOML table")
+            )
             normalized_config[field] = {}
     project = _table(normalized_config.get("project"))
     for field in ("project_id", "title", "default_provider", "timezone"):
         if not isinstance(project.get(field), str) or not project.get(field):
-            issues.append(Issue("error", "config_project", "music.toml", f"missing project.{field}"))
+            issues.append(
+                Issue(
+                    "error", "config_project", "music.toml", f"missing project.{field}"
+                )
+            )
     retention = _table(normalized_config.get("candidate_retention"))
     mode = retention.get("mode")
     if mode not in RETENTION_MODES:
-        issues.append(Issue("error", "config_retention", "music.toml", f"invalid retention mode: {mode}"))
+        issues.append(
+            Issue(
+                "error",
+                "config_retention",
+                "music.toml",
+                f"invalid retention mode: {mode}",
+            )
+        )
     if mode == "timed_local" and (
         not isinstance(retention.get("days"), int) or retention.get("days", -1) < 0
     ):
-        issues.append(Issue("error", "config_retention", "music.toml", "timed_local requires non-negative integer days"))
+        issues.append(
+            Issue(
+                "error",
+                "config_retention",
+                "music.toml",
+                "timed_local requires non-negative integer days",
+            )
+        )
     if mode == "external_archive" and not retention.get("archive_locator"):
-        issues.append(Issue("error", "config_retention", "music.toml", "external_archive requires archive_locator"))
+        issues.append(
+            Issue(
+                "error",
+                "config_retention",
+                "music.toml",
+                "external_archive requires archive_locator",
+            )
+        )
     storage = _table(normalized_config.get("storage"))
     if storage.get("public_release_canonical") != "github_release":
-        issues.append(Issue("error", "config_storage", "music.toml", "public_release_canonical must be github_release"))
+        issues.append(
+            Issue(
+                "error",
+                "config_storage",
+                "music.toml",
+                "public_release_canonical must be github_release",
+            )
+        )
     limits = _table(normalized_config.get("import_limits"))
-    for field in ("max_entries", "max_file_bytes", "max_total_bytes", "max_compression_ratio"):
+    for field in (
+        "max_entries",
+        "max_file_bytes",
+        "max_total_bytes",
+        "max_compression_ratio",
+    ):
         value = limits.get(field)
         if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
-            issues.append(Issue("error", "config_import_limits", "music.toml", f"invalid import_limits.{field}"))
+            issues.append(
+                Issue(
+                    "error",
+                    "config_import_limits",
+                    "music.toml",
+                    f"invalid import_limits.{field}",
+                )
+            )
     return normalized_config, issues
 
 
@@ -327,11 +374,24 @@ def validate(root: Path, level: str) -> dict[str, Any]:
     issues.extend(profile_issues)
     default_provider = str(_table(config.get("project")).get("default_provider") or "")
     if default_provider and default_provider not in profiles:
-        issues.append(Issue("error", "config_provider", "music.toml", f"unknown default provider: {default_provider}"))
+        issues.append(
+            Issue(
+                "error",
+                "config_provider",
+                "music.toml",
+                f"unknown default provider: {default_provider}",
+            )
+        )
 
     for path, record in records:
         relative = path.relative_to(root).as_posix()
-        required = ("schema_version", "record_type", "record_id", "created_with", "status")
+        required = (
+            "schema_version",
+            "record_type",
+            "record_id",
+            "created_with",
+            "status",
+        )
         for field in required:
             if field not in record:
                 issues.append(Issue("error", "required", relative, f"missing {field}"))
@@ -346,10 +406,24 @@ def validate(root: Path, level: str) -> dict[str, Any]:
             )
         record_type = record.get("record_type")
         if record_type not in RECORD_TYPES:
-            issues.append(Issue("error", "record_type", relative, f"unknown record type: {record_type}"))
+            issues.append(
+                Issue(
+                    "error",
+                    "record_type",
+                    relative,
+                    f"unknown record type: {record_type}",
+                )
+            )
         key = _registry_key(record)
         if key in registry:
-            issues.append(Issue("error", "duplicate_id", relative, f"duplicate scoped record ID: {record.get('record_id')}"))
+            issues.append(
+                Issue(
+                    "error",
+                    "duplicate_id",
+                    relative,
+                    f"duplicate scoped record ID: {record.get('record_id')}",
+                )
+            )
         else:
             registry[key] = (path, record)
 
@@ -368,7 +442,9 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                 continue
             if field.endswith("_ref") and not isinstance(value, str):
                 issues.append(
-                    Issue("error", "malformed_ref", relative, f"{field} must be a string")
+                    Issue(
+                        "error", "malformed_ref", relative, f"{field} must be a string"
+                    )
                 )
             elif field.endswith("_refs") and (
                 not isinstance(value, list)
@@ -384,20 +460,52 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                 )
 
         if record_type in IMMUTABLE_RECORD_TYPES and record.get("status") != "sealed":
-            issues.append(Issue("error", "seal_required", relative, f"{record_type} records must be sealed"))
-        if record_type in IMMUTABLE_RECORD_TYPES or record.get("status") == "sealed" or record.get("seal"):
+            issues.append(
+                Issue(
+                    "error",
+                    "seal_required",
+                    relative,
+                    f"{record_type} records must be sealed",
+                )
+            )
+        if (
+            record_type in IMMUTABLE_RECORD_TYPES
+            or record.get("status") == "sealed"
+            or record.get("seal")
+        ):
             seal = _table(record.get("seal"))
-            if not seal.get("sealed") or seal.get("content_sha256") != canonical_hash(record):
-                issues.append(Issue("error", "seal_mismatch", relative, "sealed record content hash does not match"))
+            if not seal.get("sealed") or seal.get("content_sha256") != canonical_hash(
+                record
+            ):
+                issues.append(
+                    Issue(
+                        "error",
+                        "seal_mismatch",
+                        relative,
+                        "sealed record content hash does not match",
+                    )
+                )
 
-        if record_type == "track" and record.get("workflow_state") not in WORKFLOW_STATES:
-            issues.append(Issue("error", "workflow_state", relative, f"invalid workflow state: {record.get('workflow_state')}"))
+        if (
+            record_type == "track"
+            and record.get("workflow_state") not in WORKFLOW_STATES
+        ):
+            issues.append(
+                Issue(
+                    "error",
+                    "workflow_state",
+                    relative,
+                    f"invalid workflow state: {record.get('workflow_state')}",
+                )
+            )
 
         if record_type == "asset":
             digest = str(record.get("sha256") or "")
             expected_id = f"asset:a-{digest}"
             if not re.fullmatch(r"[0-9a-f]{64}", digest):
-                issues.append(Issue("error", "asset_hash", relative, "asset SHA-256 is malformed"))
+                issues.append(
+                    Issue("error", "asset_hash", relative, "asset SHA-256 is malformed")
+                )
             elif record.get("record_id") != expected_id:
                 issues.append(
                     Issue(
@@ -408,9 +516,14 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                     )
                 )
 
-        if record_type == "rights_evidence" and record.get("human_status") == "confirmed":
+        if (
+            record_type == "rights_evidence"
+            and record.get("human_status") == "confirmed"
+        ):
             evidence_hash = str(record.get("evidence_sha256") or "")
-            if not record.get("private_locator") or not re.fullmatch(r"[0-9a-f]{64}", evidence_hash):
+            if not record.get("private_locator") or not re.fullmatch(
+                r"[0-9a-f]{64}", evidence_hash
+            ):
                 issues.append(
                     Issue(
                         "error",
@@ -424,15 +537,23 @@ def validate(root: Path, level: str) -> dict[str, Any]:
             try:
                 resolved = resolve_inside(Path(raw_path), root)
             except ValueError as exc:
-                issues.append(Issue("error", "path_escape", relative, f"{key_name}: {exc}"))
+                issues.append(
+                    Issue("error", "path_escape", relative, f"{key_name}: {exc}")
+                )
                 continue
             if key_name.endswith("text_path") and not resolved.is_file():
-                issues.append(Issue("error", "missing_text", relative, f"missing file: {raw_path}"))
+                issues.append(
+                    Issue(
+                        "error", "missing_text", relative, f"missing file: {raw_path}"
+                    )
+                )
 
         terms_snapshot_ref = str(record.get("terms_snapshot_ref") or "")
         if terms_snapshot_ref:
             try:
-                snapshot = resolve_inside(Path(terms_snapshot_ref), root, must_exist=True)
+                snapshot = resolve_inside(
+                    Path(terms_snapshot_ref), root, must_exist=True
+                )
                 if not snapshot.is_file():
                     raise ValueError("not a file")
                 snapshot_relative = snapshot.relative_to(root.resolve()).parts
@@ -441,11 +562,18 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                     raise ValueError("snapshot path does not match the record provider")
                 snapshot_record = load_toml(snapshot)
                 if snapshot_record.get("provider") != provider:
-                    raise ValueError("snapshot provider does not match the record provider")
+                    raise ValueError(
+                        "snapshot provider does not match the record provider"
+                    )
                 if record.get("terms_snapshot_sha256") != sha256_file(snapshot):
                     raise ValueError("snapshot SHA-256 does not match")
-                if terms_snapshot_ref != snapshot.relative_to(root.resolve()).as_posix():
-                    raise ValueError("snapshot reference is not a canonical repository-relative path")
+                if (
+                    terms_snapshot_ref
+                    != snapshot.relative_to(root.resolve()).as_posix()
+                ):
+                    raise ValueError(
+                        "snapshot reference is not a canonical repository-relative path"
+                    )
             except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
                 issues.append(
                     Issue(
@@ -460,30 +588,74 @@ def validate(root: Path, level: str) -> dict[str, Any]:
             provider = str(record.get("provider") or "")
             profile = profiles.get(provider)
             if not profile:
-                issues.append(Issue("error", "provider", relative, f"unknown provider profile: {provider}"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "provider",
+                        relative,
+                        f"unknown provider profile: {provider}",
+                    )
+                )
             else:
                 profile_version = str(profile.get("profile_version") or "")
                 if record.get("provider_profile_version") != profile_version:
-                    issues.append(Issue("error", "provider_version", relative, f"expected provider profile {profile_version}"))
-                required_fields = _table(
-                    _table(profile.get("required")).get(record_type)
-                ).get("fields") or []
+                    issues.append(
+                        Issue(
+                            "error",
+                            "provider_version",
+                            relative,
+                            f"expected provider profile {profile_version}",
+                        )
+                    )
+                required_fields = (
+                    _table(_table(profile.get("required")).get(record_type)).get(
+                        "fields"
+                    )
+                    or []
+                )
                 for field in required_fields:
                     if record.get(field) in (None, "", []):
-                        issues.append(Issue("error", "provider_required", relative, f"missing provider field: {field}"))
+                        issues.append(
+                            Issue(
+                                "error",
+                                "provider_required",
+                                relative,
+                                f"missing provider field: {field}",
+                            )
+                        )
                 operation_key = {
                     "generation": "generation_operations",
                     "edit": "edit_operations",
                     "export": "export_operations",
                 }[record_type]
-                if record.get("provider_operation") not in (profile.get(operation_key) or []):
-                    issues.append(Issue("error", "provider_operation", relative, f"unsupported operation: {record.get('provider_operation')}"))
-                allowed_data = set(_table(profile.get("provider_data")).get("allowed_keys") or [])
+                if record.get("provider_operation") not in (
+                    profile.get(operation_key) or []
+                ):
+                    issues.append(
+                        Issue(
+                            "error",
+                            "provider_operation",
+                            relative,
+                            f"unsupported operation: {record.get('provider_operation')}",
+                        )
+                    )
+                allowed_data = set(
+                    _table(profile.get("provider_data")).get("allowed_keys") or []
+                )
                 unknown = set(_table(record.get("provider_data"))) - allowed_data
                 if unknown:
-                    issues.append(Issue("error", "provider_data", relative, f"unknown provider_data keys: {', '.join(sorted(unknown))}"))
+                    issues.append(
+                        Issue(
+                            "error",
+                            "provider_data",
+                            relative,
+                            f"unknown provider_data keys: {', '.join(sorted(unknown))}",
+                        )
+                    )
 
-    portfolios = [record for _, record in records if record.get("record_type") == "portfolio"]
+    portfolios = [
+        record for _, record in records if record.get("record_type") == "portfolio"
+    ]
     if len(portfolios) != 1 or portfolios[0].get("record_id") != "portfolio:main":
         issues.append(
             Issue(
@@ -500,19 +672,43 @@ def validate(root: Path, level: str) -> dict[str, Any]:
             match = re.fullmatch(r"([a-z_]+):([A-Za-z0-9][A-Za-z0-9._-]*)", reference)
             allowed_types = REFERENCE_FIELD_TYPES.get(field)
             if not match or match.group(1) not in RECORD_TYPES:
-                issues.append(Issue("error", "malformed_ref", relative, f"{field} is not a typed reference: {reference}"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "malformed_ref",
+                        relative,
+                        f"{field} is not a typed reference: {reference}",
+                    )
+                )
                 continue
             if allowed_types is None or match.group(1) not in allowed_types:
-                issues.append(Issue("error", "reference_type", relative, f"invalid reference type for {field}: {reference}"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "reference_type",
+                        relative,
+                        f"invalid reference type for {field}: {reference}",
+                    )
+                )
                 continue
             if _resolve_ref(reference, record, registry) is None:
-                issues.append(Issue("error", "missing_ref", relative, f"{field} points to missing or ambiguous {reference}"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "missing_ref",
+                        relative,
+                        f"{field} points to missing or ambiguous {reference}",
+                    )
+                )
 
     rights_by_subject: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for _, record in records:
         if record.get("record_type") == "rights_evidence":
             rights_by_subject.setdefault(
-                (str(record.get("track_ref") or ""), str(record.get("subject_ref") or "")),
+                (
+                    str(record.get("track_ref") or ""),
+                    str(record.get("subject_ref") or ""),
+                ),
                 [],
             ).append(record)
     for path, record in records:
@@ -522,7 +718,8 @@ def validate(root: Path, level: str) -> dict[str, Any]:
         rules = _table(profile.get("rights"))
         provider_data = _table(record.get("provider_data"))
         requires_voice = bool(rules.get("voice_requires_evidence")) and any(
-            provider_data.get(key) not in (None, "", False) for key in ("voice", "persona")
+            provider_data.get(key) not in (None, "", False)
+            for key in ("voice", "persona")
         )
         requires_input = bool(rules.get("uploaded_audio_requires_evidence")) and bool(
             record.get("input_refs")
@@ -551,7 +748,7 @@ def validate(root: Path, level: str) -> dict[str, Any]:
             )
 
     graph: dict[str, list[str]] = {}
-    for path, record in records:
+    for _path, record in records:
         if record.get("record_type") not in EVENT_TYPES:
             continue
         node = _registry_key(record)
@@ -568,7 +765,9 @@ def validate(root: Path, level: str) -> dict[str, Any]:
     def visit(node: str) -> None:
         if node in visiting:
             path = registry[node][0].relative_to(root).as_posix()
-            issues.append(Issue("error", "dag_cycle", path, "event lineage contains a cycle"))
+            issues.append(
+                Issue("error", "dag_cycle", path, "event lineage contains a cycle")
+            )
             return
         if node in visited:
             return
@@ -591,8 +790,7 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                 "https://github.com/"
             )
             and item.get("status") == "sealed"
-            and _table(item.get("seal")).get("content_sha256")
-            == canonical_hash(item)
+            and _table(item.get("seal")).get("content_sha256") == canonical_hash(item)
         }
         for path, record in records:
             if record.get("record_type") not in {"lyrics", "prompt", "asset_location"}:
@@ -602,12 +800,28 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                 text_path = str(record.get("text_path") or "")
                 expected = str(record.get("sha256") or "")
                 if not text_path or not expected:
-                    issues.append(Issue("error", "text_hash", relative, "post validation requires text_path and sha256"))
+                    issues.append(
+                        Issue(
+                            "error",
+                            "text_hash",
+                            relative,
+                            "post validation requires text_path and sha256",
+                        )
+                    )
                 else:
                     try:
-                        actual = sha256_file(resolve_inside(Path(text_path), root, must_exist=True))
+                        actual = sha256_file(
+                            resolve_inside(Path(text_path), root, must_exist=True)
+                        )
                         if actual != expected.removeprefix("sha256:"):
-                            issues.append(Issue("error", "text_hash", relative, "text SHA-256 mismatch"))
+                            issues.append(
+                                Issue(
+                                    "error",
+                                    "text_hash",
+                                    relative,
+                                    "text SHA-256 mismatch",
+                                )
+                            )
                     except (OSError, ValueError) as exc:
                         issues.append(Issue("error", "text_hash", relative, str(exc)))
                 continue
@@ -628,7 +842,14 @@ def validate(root: Path, level: str) -> dict[str, Any]:
             expected = str(asset[1].get("sha256") or "").removeprefix("sha256:")
             if storage in {"git_lfs", "release_staging"}:
                 if not local_path:
-                    issues.append(Issue("error", "asset_path", relative, "local asset storage requires local_path"))
+                    issues.append(
+                        Issue(
+                            "error",
+                            "asset_path",
+                            relative,
+                            "local asset storage requires local_path",
+                        )
+                    )
                     continue
                 try:
                     asset_path = resolve_inside(Path(local_path), root, must_exist=True)
@@ -643,11 +864,20 @@ def validate(root: Path, level: str) -> dict[str, Any]:
                     issues.append(Issue("error", "asset_path", relative, str(exc)))
                     continue
                 if actual != expected:
-                    issues.append(Issue("error", "asset_hash", relative, "asset SHA-256 mismatch"))
+                    issues.append(
+                        Issue("error", "asset_hash", relative, "asset SHA-256 mismatch")
+                    )
                 if storage == "git_lfs":
                     is_lfs, detail = _check_lfs_attribute(root, local_path)
                     if not is_lfs:
-                        issues.append(Issue("error", "lfs_policy", relative, f"asset is not covered by Git LFS: {detail}"))
+                        issues.append(
+                            Issue(
+                                "error",
+                                "lfs_policy",
+                                relative,
+                                f"asset is not covered by Git LFS: {detail}",
+                            )
+                        )
             elif storage == "github_release":
                 locator = str(record.get("archived_locator") or "")
                 if not locator.startswith("https://github.com/"):
@@ -706,18 +936,43 @@ def _validate_releases(
     registry: dict[str, tuple[Path, dict[str, Any]]],
     issues: list[Issue],
 ) -> None:
-    releases = [(path, record) for path, record in records if record.get("record_type") == "release_candidate"]
+    releases = [
+        (path, record)
+        for path, record in records
+        if record.get("record_type") == "release_candidate"
+    ]
     if not releases:
-        issues.append(Issue("error", "release_missing", "releases", "no release candidate records found"))
+        issues.append(
+            Issue(
+                "error",
+                "release_missing",
+                "releases",
+                "no release candidate records found",
+            )
+        )
         return
     for path, record in releases:
         relative = path.relative_to(root).as_posix()
         frozen = _table(record.get("frozen"))
         if not frozen.get("value"):
-            issues.append(Issue("error", "release_not_frozen", relative, "release candidate is not frozen"))
+            issues.append(
+                Issue(
+                    "error",
+                    "release_not_frozen",
+                    relative,
+                    "release candidate is not frozen",
+                )
+            )
         master = _resolve_ref(str(record.get("master_ref") or ""), record, registry)
         if not master or master[1].get("record_type") != "asset":
-            issues.append(Issue("error", "master_ref", relative, "master_ref must resolve to an asset"))
+            issues.append(
+                Issue(
+                    "error",
+                    "master_ref",
+                    relative,
+                    "master_ref must resolve to an asset",
+                )
+            )
         master_digest = (
             str(master[1].get("sha256") or "").removeprefix("sha256:") if master else ""
         )
@@ -729,22 +984,39 @@ def _validate_releases(
             else []
         )
         if raw_review_refs != review_refs:
-            issues.append(Issue("error", "listening_gate", relative, "listening_gate_refs must be a list of strings"))
+            issues.append(
+                Issue(
+                    "error",
+                    "listening_gate",
+                    relative,
+                    "listening_gate_refs must be a list of strings",
+                )
+            )
         if not review_refs:
-            issues.append(Issue("error", "listening_gate", relative, "missing listening gate"))
+            issues.append(
+                Issue("error", "listening_gate", relative, "missing listening gate")
+            )
         for reference in review_refs:
             review = _resolve_ref(reference, record, registry)
             if (
                 not review
                 or review[1].get("record_type") != "review"
                 or review[1].get("status") != "sealed"
-                or _table(review[1].get("seal")).get("content_sha256") != canonical_hash(review[1])
+                or _table(review[1].get("seal")).get("content_sha256")
+                != canonical_hash(review[1])
                 or review[1].get("decision") not in {"approved", "selected"}
                 or not review[1].get("human_confirmed")
                 or str(review[1].get("subject_sha256") or "").removeprefix("sha256:")
                 != master_digest
             ):
-                issues.append(Issue("error", "listening_gate", relative, f"invalid listening gate: {reference}"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "listening_gate",
+                        relative,
+                        f"invalid listening gate: {reference}",
+                    )
+                )
         raw_rights_refs = record.get("rights_refs")
         rights_refs = (
             raw_rights_refs
@@ -753,11 +1025,28 @@ def _validate_releases(
             else []
         )
         if raw_rights_refs != rights_refs:
-            issues.append(Issue("error", "rights_gate", relative, "rights_refs must be a list of strings"))
+            issues.append(
+                Issue(
+                    "error",
+                    "rights_gate",
+                    relative,
+                    "rights_refs must be a list of strings",
+                )
+            )
         override = _table(record.get("human_override"))
-        override_valid = all(override.get(field) for field in ("reason", "actor", "timestamp", "unresolved_risks"))
+        override_valid = all(
+            override.get(field)
+            for field in ("reason", "actor", "timestamp", "unresolved_risks")
+        )
         if not rights_refs and not override_valid:
-            issues.append(Issue("error", "rights_gate", relative, "missing rights evidence and no valid override"))
+            issues.append(
+                Issue(
+                    "error",
+                    "rights_gate",
+                    relative,
+                    "missing rights evidence and no valid override",
+                )
+            )
         track_blockers = [
             item
             for _, item in records
@@ -780,41 +1069,93 @@ def _validate_releases(
                 not evidence
                 or evidence[1].get("record_type") != "rights_evidence"
                 or evidence[1].get("status") != "sealed"
-                or _table(evidence[1].get("seal")).get("content_sha256") != canonical_hash(evidence[1])
+                or _table(evidence[1].get("seal")).get("content_sha256")
+                != canonical_hash(evidence[1])
                 or not evidence[1].get("human_confirmed")
             ):
-                issues.append(Issue("error", "rights_gate", relative, f"invalid rights evidence: {reference}"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "rights_gate",
+                        relative,
+                        f"invalid rights evidence: {reference}",
+                    )
+                )
                 continue
             human_status = evidence[1].get("human_status")
             if human_status == "known_unlicensed":
-                issues.append(Issue("error", "known_unlicensed", relative, f"non-overridable rights blocker: {reference}"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "known_unlicensed",
+                        relative,
+                        f"non-overridable rights blocker: {reference}",
+                    )
+                )
             elif human_status != "confirmed" and not override_valid:
-                issues.append(Issue("error", "rights_gate", relative, f"unconfirmed rights evidence: {reference}"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "rights_gate",
+                        relative,
+                        f"unconfirmed rights evidence: {reference}",
+                    )
+                )
         raw_frozen_files = record.get("frozen_files")
         frozen_files = raw_frozen_files if isinstance(raw_frozen_files, list) else []
         if raw_frozen_files != frozen_files:
-            issues.append(Issue("error", "frozen_file", relative, "frozen_files must be a list of tables"))
+            issues.append(
+                Issue(
+                    "error",
+                    "frozen_file",
+                    relative,
+                    "frozen_files must be a list of tables",
+                )
+            )
         frozen_by_kind: dict[str, list[dict[str, Any]]] = {}
         for item in frozen_files:
             if not isinstance(item, dict):
-                issues.append(Issue("error", "frozen_file", relative, "frozen_files must contain tables"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "frozen_file",
+                        relative,
+                        "frozen_files must contain tables",
+                    )
+                )
                 continue
             kind = str(item.get("kind") or "")
             frozen_by_kind.setdefault(kind, []).append(item)
             frozen_path = str(item.get("path") or "")
             expected_hash = str(item.get("sha256") or "")
             if not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
-                issues.append(Issue("error", "frozen_file", relative, f"invalid frozen hash: {frozen_path}"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "frozen_file",
+                        relative,
+                        f"invalid frozen hash: {frozen_path}",
+                    )
+                )
                 continue
             try:
                 actual_hash = sha256_file(
                     resolve_inside(Path(frozen_path), root, must_exist=True)
                 )
             except (OSError, ValueError) as exc:
-                issues.append(Issue("error", "frozen_file", relative, f"{frozen_path}: {exc}"))
+                issues.append(
+                    Issue("error", "frozen_file", relative, f"{frozen_path}: {exc}")
+                )
                 continue
             if actual_hash != expected_hash:
-                issues.append(Issue("error", "frozen_file", relative, f"frozen hash mismatch: {frozen_path}"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "frozen_file",
+                        relative,
+                        f"frozen hash mismatch: {frozen_path}",
+                    )
+                )
 
         required_frozen = {
             "metadata": str(record.get("metadata_path") or ""),
@@ -823,20 +1164,41 @@ def _validate_releases(
             "analysis": str(record.get("analysis_path") or ""),
         }
         for kind, expected_path in required_frozen.items():
-            paths = [str(item.get("path") or "") for item in frozen_by_kind.get(kind, [])]
+            paths = [
+                str(item.get("path") or "") for item in frozen_by_kind.get(kind, [])
+            ]
             if paths != [expected_path]:
-                issues.append(Issue("error", "frozen_file", relative, f"missing or inconsistent frozen {kind}"))
-        policy_paths = [str(item.get("path") or "") for item in frozen_by_kind.get("policy_snapshot", [])]
+                issues.append(
+                    Issue(
+                        "error",
+                        "frozen_file",
+                        relative,
+                        f"missing or inconsistent frozen {kind}",
+                    )
+                )
+        policy_paths = [
+            str(item.get("path") or "")
+            for item in frozen_by_kind.get("policy_snapshot", [])
+        ]
         raw_policy_refs = record.get("policy_snapshot_refs")
         policy_refs = raw_policy_refs if isinstance(raw_policy_refs, list) else []
         if policy_paths != policy_refs:
-            issues.append(Issue("error", "policy_snapshot", relative, "frozen policy snapshots are inconsistent"))
+            issues.append(
+                Issue(
+                    "error",
+                    "policy_snapshot",
+                    relative,
+                    "frozen policy snapshots are inconsistent",
+                )
+            )
         policy_providers: set[str] = set()
         for item in frozen_by_kind.get("policy_snapshot", []):
             provider = str(item.get("provider") or "")
             policy_path = str(item.get("path") or "")
             try:
-                resolved_policy = resolve_inside(Path(policy_path), root, must_exist=True)
+                resolved_policy = resolve_inside(
+                    Path(policy_path), root, must_exist=True
+                )
                 policy_relative = resolved_policy.relative_to(root.resolve()).parts
                 policy = load_toml(resolved_policy)
                 if (
@@ -844,12 +1206,24 @@ def _validate_releases(
                     or policy_relative[:2] != ("policies", "platforms")
                     or policy_relative[2] != provider
                     or policy.get("provider") != provider
-                    or not all(policy.get(field) for field in ("snapshot_id", "provider", "retrieved_at"))
+                    or not all(
+                        policy.get(field)
+                        for field in ("snapshot_id", "provider", "retrieved_at")
+                    )
                 ):
-                    raise ValueError("policy snapshot identity is incomplete or mismatched")
+                    raise ValueError(
+                        "policy snapshot identity is incomplete or mismatched"
+                    )
                 policy_providers.add(provider)
             except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-                issues.append(Issue("error", "policy_snapshot", relative, f"invalid policy snapshot: {exc}"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "policy_snapshot",
+                        relative,
+                        f"invalid policy snapshot: {exc}",
+                    )
+                )
         track_providers = {
             str(item.get("provider") or "")
             for _, item in records
@@ -918,7 +1292,9 @@ def _validate_releases(
                 or not audio_streams
                 or duration <= 0
             ):
-                raise ValueError("analysis is not a hash-bound positive-duration audio measurement")
+                raise ValueError(
+                    "analysis is not a hash-bound positive-duration audio measurement"
+                )
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             issues.append(Issue("error", "audio_analysis", relative, str(exc)))
 
@@ -926,7 +1302,9 @@ def _validate_releases(
         try:
             gate = load_toml(resolve_inside(Path(gate_path), root, must_exist=True))
         except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
-            issues.append(Issue("error", "release_gate", relative, f"invalid frozen gate: {exc}"))
+            issues.append(
+                Issue("error", "release_gate", relative, f"invalid frozen gate: {exc}")
+            )
         else:
             expected_gate_values = {
                 "listening_gate_refs": review_refs,
@@ -935,10 +1313,26 @@ def _validate_releases(
             }
             for field, expected_value in expected_gate_values.items():
                 if gate.get(field) != expected_value:
-                    issues.append(Issue("error", "release_gate", relative, f"gate {field} does not match release candidate"))
-            expected_status = "PASS_WITH_OVERRIDE" if record.get("human_override") else "PASS"
+                    issues.append(
+                        Issue(
+                            "error",
+                            "release_gate",
+                            relative,
+                            f"gate {field} does not match release candidate",
+                        )
+                    )
+            expected_status = (
+                "PASS_WITH_OVERRIDE" if record.get("human_override") else "PASS"
+            )
             if gate.get("status") != expected_status:
-                issues.append(Issue("error", "release_gate", relative, "gate status does not match release candidate"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "release_gate",
+                        relative,
+                        "gate status does not match release candidate",
+                    )
+                )
 
         checksums_path = str(record.get("checksums_path") or "")
         try:
@@ -952,17 +1346,30 @@ def _validate_releases(
             if not line:
                 continue
             parts = line.split("  ", 1)
-            if len(parts) != 2 or not re.fullmatch(r"[0-9a-f]{64}", parts[0]) or not parts[1]:
+            if (
+                len(parts) != 2
+                or not re.fullmatch(r"[0-9a-f]{64}", parts[0])
+                or not parts[1]
+            ):
                 malformed_checksum = True
                 break
             checksum_entries[parts[1]] = parts[0]
         if malformed_checksum:
-            issues.append(Issue("error", "checksums", relative, "checksums file is malformed"))
+            issues.append(
+                Issue("error", "checksums", relative, "checksums file is malformed")
+            )
         elif master:
             expected_digest = str(master[1].get("sha256") or "").removeprefix("sha256:")
             expected_name = Path(str(record.get("staging_path") or "")).name
             if checksum_entries.get(expected_name) != expected_digest:
-                issues.append(Issue("error", "checksums", relative, "master checksum entry is missing or incorrect"))
+                issues.append(
+                    Issue(
+                        "error",
+                        "checksums",
+                        relative,
+                        "master checksum entry is missing or incorrect",
+                    )
+                )
 
 
 def format_report(report: dict[str, Any]) -> str:
